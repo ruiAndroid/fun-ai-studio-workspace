@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Fun Ai Studio Mongo Explorer（只读）</title>
+  <style>
+    :root{color-scheme:light dark}
+    body{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Arial; margin:0; padding:16px; background:#0b0c10; color:#e8e8e8}
+    a{color:#7db8ff}
+    .row{display:flex; gap:12px; flex-wrap:wrap}
+    .card{background:#14161d; border:1px solid #2a2e3a; border-radius:10px; padding:12px}
+    .card h3{margin:0 0 8px 0; font-size:14px; opacity:.9}
+    label{display:block; font-size:12px; opacity:.85; margin:8px 0 4px}
+    input,textarea,select,button{width:100%; box-sizing:border-box; border-radius:8px; border:1px solid #2a2e3a; background:#0f1117; color:#e8e8e8; padding:8px; font-size:13px}
+    textarea{min-height:90px; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+    button{cursor:pointer; background:#1b3a62; border-color:#2b5a96}
+    button.secondary{background:#1a1d27; border-color:#2a2e3a}
+    button:disabled{opacity:.6; cursor:not-allowed}
+    .layout{display:grid; grid-template-columns: 280px 1fr; gap:12px; align-items:start}
+    .cols{max-height:360px; overflow:auto}
+    .col-item{padding:8px; border-radius:8px; border:1px solid #2a2e3a; background:#0f1117; margin-bottom:8px; cursor:pointer}
+    .col-item.active{border-color:#7db8ff}
+    pre{white-space:pre-wrap; word-break:break-word; background:#0f1117; border:1px solid #2a2e3a; border-radius:10px; padding:10px; overflow:auto; max-height:520px}
+    .small{font-size:12px; opacity:.8}
+    .err{color:#ff8a8a}
+    .ok{color:#9bf6b0}
+    .kv{display:grid; grid-template-columns: 1fr 1fr; gap:10px}
+    @media (max-width: 980px){ .layout{grid-template-columns:1fr} }
+  </style>
+</head>
+<body>
+  <div class="row">
+    <div class="card" style="flex:1">
+      <h3>Fun Ai Studio Mongo Explorer（只读）</h3>
+      <div class="small">
+        本页面只提供只读浏览/查询。API 需要 JWT：
+        <div style="margin-top:6px">
+          - 推荐通过 URL hash 注入（不会出现在 queryString/server log）：<code>#token=Bearer%20eyJ...</code><br/>
+          - 也支持 query/hash 注入 userId/appId：<code>?userId=1001&appId=2002</code>
+        </div>
+      </div>
+    </div>
+    <div class="card" style="width:360px">
+      <h3>连接参数</h3>
+      <div class="kv">
+        <div>
+          <label>userId</label>
+          <input id="userId" placeholder="例如 1001" />
+        </div>
+        <div>
+          <label>appId</label>
+          <select id="appId"></select>
+        </div>
+      </div>
+      <label>Authorization</label>
+      <input id="token" placeholder="Bearer eyJ..." />
+      <div class="row" style="margin-top:10px">
+        <button id="btnAuto" class="secondary">自动填充（当前登录）</button>
+        <button id="btnLoadCols">加载集合</button>
+        <button id="btnClear" class="secondary">清空</button>
+      </div>
+      <div id="status" class="small" style="margin-top:8px"></div>
+    </div>
+  </div>
+
+  <div class="layout" style="margin-top:12px">
+    <div class="card">
+      <h3>Collections</h3>
+      <div id="cols" class="cols small">请先“加载集合”</div>
+    </div>
+
+    <div class="card">
+      <h3>查询（find）</h3>
+      <div class="kv">
+        <div>
+          <label>collection</label>
+          <input id="collection" placeholder="例如 users" />
+        </div>
+        <div class="kv" style="grid-template-columns:1fr 1fr">
+          <div>
+            <label>limit</label>
+            <input id="limit" value="50" />
+          </div>
+          <div>
+            <label>skip</label>
+            <input id="skip" value="0" />
+          </div>
+        </div>
+      </div>
+      <div class="kv">
+        <div>
+          <label>filter (JSON)</label>
+          <textarea id="filter">{}</textarea>
+        </div>
+        <div>
+          <label>sort (JSON，可空)</label>
+          <textarea id="sort"></textarea>
+        </div>
+      </div>
+      <label>projection (JSON，可空)</label>
+      <textarea id="projection"></textarea>
+      <div class="row" style="margin-top:10px">
+        <button id="btnFind">查询</button>
+        <button id="btnPretty" class="secondary">格式化 JSON</button>
+      </div>
+      <div class="small" style="margin-top:8px">
+        提示：返回过大可能被后端截断导致解析失败，请降低 limit 或使用 projection。
+      </div>
+      <h3 style="margin-top:14px">结果</h3>
+      <pre id="out">暂无</pre>
+    </div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const state = { activeCol: null };
+
+    function parseParamsFromUrl() {
+      const q = new URLSearchParams(location.search || "");
+      const h = new URLSearchParams((location.hash || "").replace(/^#/, ""));
+      // token 建议放 hash（不会上送服务器）
+      return {
+        userId: q.get("userId") || h.get("userId"),
+        appId: q.get("appId") || h.get("appId"),
+        token: h.get("token") || q.get("token") || h.get("auth") || q.get("auth"),
+      };
+    }
+
+    function setStatus(text, kind) {
+      const el = $("status");
+      el.textContent = text || "";
+      el.className = "small " + (kind === "err" ? "err" : kind === "ok" ? "ok" : "");
+    }
+
+    function guessTokenFromStorage() {
+      const keys = [
+        "token", "access_token", "accessToken", "jwt", "jwtToken",
+        "Authorization", "auth", "authToken", "funai_token"
+      ];
+      for (const k of keys) {
+        const v1 = (localStorage.getItem(k) || "").trim();
+        if (v1) return v1;
+        const v2 = (sessionStorage.getItem(k) || "").trim();
+        if (v2) return v2;
+      }
+      return "";
+    }
+
+    function authHeaders() {
+      const token = ($("token").value || "").trim();
+      const h = { "Content-Type": "application/json" };
+      if (token) h["Authorization"] = token.startsWith("Bearer ") ? token : ("Bearer " + token);
+      return h;
+    }
+
+    function baseParams() {
+      const userId = ($("userId").value || "").trim();
+      const appId = ($("appId").value || "").trim();
+      if (!userId || !appId) throw new Error("请先填写 userId/appId");
+      return { userId, appId };
+    }
+
+    async function apiGetRaw(path, params) {
+      const qs = params ? ("?" + new URLSearchParams(params).toString()) : "";
+      const r = await fetch(path + qs, { headers: authHeaders() });
+      return await r.json();
+    }
+
+    async function apiGet(path, params) {
+      const qs = new URLSearchParams(params).toString();
+      const r = await fetch(path + "?" + qs, { headers: authHeaders() });
+      return await r.json();
+    }
+
+    async function apiPost(path, params, body) {
+      const qs = new URLSearchParams(params).toString();
+      const r = await fetch(path + "?" + qs, { method: "POST", headers: authHeaders(), body: JSON.stringify(body || {}) });
+      return await r.json();
+    }
+
+    function renderCols(cols) {
+      const box = $("cols");
+      box.innerHTML = "";
+      if (!cols || cols.length === 0) {
+        box.textContent = "（空）";
+        return;
+      }
+      cols.forEach((c) => {
+        const div = document.createElement("div");
+        div.className = "col-item" + (state.activeCol === c ? " active" : "");
+        div.textContent = c;
+        div.onclick = () => {
+          state.activeCol = c;
+          $("collection").value = c;
+          renderCols(cols);
+        };
+        box.appendChild(div);
+      });
+    }
+
+    function prettyAll() {
+      ["filter","sort","projection"].forEach((k) => {
+        const el = $(k);
+        const v = (el.value || "").trim();
+        if (!v) return;
+        try { el.value = JSON.stringify(JSON.parse(v), null, 2); } catch (e) {}
+      });
+    }
+
+    function renderAppOptions(apps) {
+      const sel = $("appId");
+      sel.innerHTML = "";
+      const opt0 = document.createElement("option");
+      opt0.value = "";
+      opt0.textContent = "请选择 app";
+      sel.appendChild(opt0);
+      (apps || []).forEach((a) => {
+        const opt = document.createElement("option");
+        opt.value = String(a.id || a.appId || "");
+        const name = (a.appName || a.name || ("app-" + opt.value));
+        opt.textContent = `${name} (${opt.value})`;
+        sel.appendChild(opt);
+      });
+    }
+
+    async function autoFill() {
+      setStatus("自动填充中...", "");
+      // 1) token
+      if (!$("token").value.trim()) {
+        const guessed = guessTokenFromStorage();
+        if (guessed) $("token").value = guessed;
+      }
+      const tokenNow = $("token").value.trim();
+      if (!tokenNow) {
+        setStatus("未检测到登录 Token：请在同域的已登录页面打开本页，或手动粘贴 Bearer Token（也可放到 URL hash：#token=...）", "err");
+        return;
+      }
+      // 2) me -> userId
+      const me = await apiGetRaw("/api/fun-ai/user/me");
+      if (me.code !== 200 || !me.data) {
+        throw new Error(me.message || "获取当前用户失败（请确认 token 有效）");
+      }
+      if (me.data.id) $("userId").value = String(me.data.id);
+
+      // 3) app list（需要 userId）
+      const res = await apiGetRaw("/api/fun-ai/app/list", { userId: $("userId").value.trim() });
+      if (res.code !== 200) throw new Error(res.message || "获取 app 列表失败");
+      renderAppOptions(res.data || []);
+
+      setStatus(`OK：userId=${$("userId").value.trim()}，请选择 appId`, "ok");
+    }
+
+    $("btnAuto").onclick = async () => {
+      try {
+        await autoFill();
+      } catch (e) {
+        setStatus(String(e.message || e), "err");
+      }
+    };
+
+    $("btnLoadCols").onclick = async () => {
+      setStatus("加载中...", "");
+      try {
+        const p = baseParams();
+        const res = await apiGet("/api/fun-ai/workspace/mongo/collections", p);
+        if (res.code !== 200) throw new Error(res.message || "请求失败");
+        renderCols((res.data && res.data.collections) || []);
+        setStatus("OK: db=" + (res.data && res.data.dbName), "ok");
+      } catch (e) {
+        setStatus(String(e.message || e), "err");
+      }
+    };
+
+    $("btnFind").onclick = async () => {
+      setStatus("查询中...", "");
+      $("out").textContent = "查询中...";
+      try {
+        const p = baseParams();
+        const body = {
+          collection: ($("collection").value || "").trim(),
+          filter: ($("filter").value || "").trim(),
+          projection: ($("projection").value || "").trim(),
+          sort: ($("sort").value || "").trim(),
+          limit: parseInt(($("limit").value || "50").trim(), 10),
+          skip: parseInt(($("skip").value || "0").trim(), 10),
+        };
+        const res = await apiPost("/api/fun-ai/workspace/mongo/find", p, body);
+        if (res.code !== 200) throw new Error(res.message || "请求失败");
+        $("out").textContent = JSON.stringify(res.data, null, 2);
+        setStatus("OK: returned=" + (res.data && res.data.returned), "ok");
+      } catch (e) {
+        $("out").textContent = String(e.stack || e.message || e);
+        setStatus(String(e.message || e), "err");
+      }
+    };
+
+    $("btnPretty").onclick = () => {
+      prettyAll();
+      setStatus("已格式化（能解析的 JSON）", "ok");
+    };
+
+    $("btnClear").onclick = () => {
+      $("cols").textContent = "请先“加载集合”";
+      $("collection").value = "";
+      $("filter").value = "{}";
+      $("sort").value = "";
+      $("projection").value = "";
+      $("out").textContent = "暂无";
+      setStatus("", "");
+      state.activeCol = null;
+    };
+
+    // 初始化：URL 参数优先，其次 localStorage；token 若为空再尝试自动猜测。
+    try {
+      const fromUrl = parseParamsFromUrl();
+      const saved = JSON.parse(localStorage.getItem("ws_mongo_explorer") || "{}");
+      const uid = (fromUrl.userId || saved.userId || "").trim();
+      const aid = (fromUrl.appId || saved.appId || "").trim();
+      const tok = (fromUrl.token || saved.token || "").trim();
+      if (uid) $("userId").value = uid;
+      if (tok) $("token").value = tok;
+      // appId select：先放一个“当前选择”，后续 autoFill 会拉 app 列表并覆盖 options
+      renderAppOptions(aid ? [{ id: aid, appName: "当前选择" }] : []);
+      if (aid) $("appId").value = aid;
+      if (!$("token").value.trim()) {
+        const guessed = guessTokenFromStorage();
+        if (guessed) $("token").value = guessed;
+      }
+
+      // 若 URL 已明确注入三要素（userId/appId/token），则直接锁定输入并提示用户可直接“加载集合”
+      const injectedAll = !!(fromUrl.userId && fromUrl.appId && fromUrl.token);
+      if (injectedAll) {
+        $("userId").disabled = true;
+        $("appId").disabled = true;
+        $("token").disabled = true;
+        setStatus("已从 URL 注入 userId/appId/token，可直接点击“加载集合”。（建议 token 放在 #hash 中）", "ok");
+      }
+    } catch (e) {
+      renderAppOptions([]);
+    }
+    ["userId","appId","token"].forEach((k) => {
+      $(k).addEventListener("change", () => {
+        try {
+          localStorage.setItem("ws_mongo_explorer", JSON.stringify({
+            userId: $("userId").value.trim(),
+            appId: $("appId").value.trim(),
+            token: $("token").value.trim(),
+          }));
+        } catch (e) {}
+      });
+    });
+  </script>
+</body>
+</html>
+
+
