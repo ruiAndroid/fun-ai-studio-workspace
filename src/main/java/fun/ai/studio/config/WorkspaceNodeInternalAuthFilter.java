@@ -62,6 +62,15 @@ public class WorkspaceNodeInternalAuthFilter extends OncePerRequestFilter {
             return;
         }
 
+        // 1.5) WebSocket 终端握手：由小机 Nginx 直转发到大机，无法在 Nginx 层附加 HMAC 头
+        // - 仍保留来源 IP allowlist（上面已校验）
+        // - 跳过签名校验（否则握手会被 401）
+        String uri = req.getRequestURI();
+        if (uri != null && uri.startsWith("/api/fun-ai/workspace/ws/")) {
+            filterChain.doFilter(req, response);
+            return;
+        }
+
         // 2) 签名校验（可选）
         if (props != null && props.isRequireSignature()) {
             if (!verifySignature(req, props)) {
