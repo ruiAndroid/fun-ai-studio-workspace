@@ -12,7 +12,7 @@ import java.util.List;
  * - 可选开启签名校验（HMAC）
  */
 @Component
-@ConfigurationProperties(prefix = "workspaceNode.internal")
+@ConfigurationProperties(prefix = "workspace-node.internal")
 public class WorkspaceNodeInternalAuthProperties {
     /**
      * 允许的来源 IP（单个值或逗号分隔列表）。
