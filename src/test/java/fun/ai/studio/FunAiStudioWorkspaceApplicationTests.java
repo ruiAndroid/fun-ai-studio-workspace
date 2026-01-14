@@ -1,4 +1,4 @@
-package fun.ai.studio.workspace;
+package fun.ai.studio;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;

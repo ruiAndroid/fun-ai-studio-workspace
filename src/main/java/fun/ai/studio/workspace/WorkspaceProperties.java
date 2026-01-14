@@ -1,0 +1,479 @@
+package fun.ai.studio.workspace;
+
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.stereotype.Component;
+
+/**
+ * Workspace（用户在线开发容器）配置
+ */
+@Component
+@ConfigurationProperties(prefix = "funai.workspace")
+public class WorkspaceProperties {
+
+    /**
+     * 是否启用 workspace 功能
+     */
+    private boolean enabled = false;
+
+    /**
+     * workspace 宿主机持久化根目录：{hostRoot}/{userId}/apps/{appId}
+     */
+    private String hostRoot;
+
+    /**
+     * workspace 容器镜像（建议使用你自己的 ACR 镜像）
+     */
+    private String image;
+
+    /**
+     * 容器内 dev server 端口（Vite 默认 5173）
+     */
+    private int containerPort = 5173;
+
+    /**
+     * 预览地址的 baseUrl（建议配置为 nginx 的域名），用于后端生成 previewUrl
+     * 示例：
+     * - https://preview.example.com
+     *
+     * 推荐配合 nginx 反代（只开 80/443）：最终 previewUrl 形如
+     * {previewBaseUrl}{previewPathPrefix}/{userId}/
+     */
+    private String previewBaseUrl;
+
+    /**
+     * nginx 反代预览的路径前缀（不以 / 结尾），默认 /ws
+     * 最终会拼接为 {previewBaseUrl}{previewPathPrefix}/{userId}/
+     */
+    private String previewPathPrefix = "/ws";
+
+    /**
+     * nginx auth_request 调用内部端口查询接口的共享密钥（强烈建议配置）
+     * nginx 子请求需要携带 Header：X-WS-Token
+     */
+    private String nginxAuthToken;
+
+    /**
+     * 宿主机端口分配起始值
+     */
+    private int hostPortBase = 20000;
+
+    /**
+     * 单机最多尝试分配的端口数量（从 hostPortBase 开始向后扫描）
+     */
+    private int hostPortScanSize = 2000;
+
+    /**
+     * 容器内 workspace 挂载目录
+     */
+    private String containerWorkdir = "/workspace";
+
+    /**
+     * 容器名前缀：ws-u-{userId}
+     */
+    private String containerNamePrefix = "ws-u-";
+
+    /**
+     * 容器网络名（podman/docker）：用于让 workspace 容器访问同机的其它服务容器（如 Verdaccio）。
+     * 建议在宿主机创建网络：docker network create funai-net
+     */
+    private String networkName = "funai-net";
+
+    /**
+     * npm registry（推荐指向同机 Verdaccio）：http://verdaccio:4873
+     * 若为空，则不做注入，脚本侧也不会强行覆盖。
+     */
+    private String npmRegistry = "http://verdaccio:4873";
+
+    private String httpProxy;
+    private String httpsProxy;
+    private String noProxy;
+
+    /**
+     * docker run 资源限制（可选）
+     * <p>
+     * 说明：
+     * - 不配置则不注入任何限制（保持历史行为）
+     * - 典型值：dockerMemory=1400m, dockerCpus=1.5, pidsLimit=512
+     */
+    private String dockerMemory;
+
+    /**
+     * docker run --memory-swap（可选）
+     * - 例如：1400m、2g
+     * - Docker 语义：memory+swap 的总量上限（不同运行时实现可能略有差异）
+     */
+    private String dockerMemorySwap;
+
+    /**
+     * docker run --cpus（可选）
+     * 例如：1.0 / 1.5 / 2.0
+     */
+    private Double dockerCpus;
+
+    /**
+     * docker run --pids-limit（可选）
+     * 防止 fork 炸弹或依赖安装时创建过多进程把宿主机拖死。
+     */
+    private Integer pidsLimit;
+
+    /**
+     * 无操作多少分钟后自动 stop run（默认 10 分钟）
+     */
+    private int idleStopRunMinutes = 10;
+
+    /**
+     * 无操作多少分钟后自动 stop 容器（默认 20 分钟）
+     */
+    private int idleStopContainerMinutes = 20;
+
+    /**
+     * run/status 中 STARTING 的超时秒数；超过后仍未拿到 pid，则认为启动失败（避免前端无限转圈）
+     */
+    private int runStartingTimeoutSeconds = 300;
+
+    /**
+     * 受控任务日志保留策略：同一 userId + type（BUILD/INSTALL/START/DEV）最多保留最近 N 份日志文件（忽略 appId）。
+     * <p>
+     * 日志文件名形如：run/run-{type}-{appId}-{timestamp}.log
+     * - 设置为 0 或负数：不做清理（可能导致 run 目录日志无限增长）
+     * <p>
+     * 说明：用户可能频繁切换不同 appId，如果按 appId 维度保留，run 目录总体仍会持续增长。
+     */
+    private int runLogKeepPerType = 3;
+
+    /**
+     * Mongo（可选）：在 workspace 用户容器内提供本地 MongoDB（同一用户容器仅一个 mongod 实例）
+     * 隔离方式：同一个 mongod 下按 appId 使用不同 dbName（默认前缀 db_）。
+     *
+     * 约定：
+     * - 宿主机使用 bind mount 持久化：{hostRoot}/{userId}/mongo/db
+     * - 容器内 dbPath 默认：/data/db
+     */
+    private MongoProperties mongo = new MongoProperties();
+
+    public boolean isEnabled() {
+        return enabled;
+    }
+
+    public void setEnabled(boolean enabled) {
+        this.enabled = enabled;
+    }
+
+    public String getHostRoot() {
+        return hostRoot;
+    }
+
+    public void setHostRoot(String hostRoot) {
+        this.hostRoot = hostRoot;
+    }
+
+    public String getImage() {
+        return image;
+    }
+
+    public void setImage(String image) {
+        this.image = image;
+    }
+
+    public int getContainerPort() {
+        return containerPort;
+    }
+
+    public void setContainerPort(int containerPort) {
+        this.containerPort = containerPort;
+    }
+
+    public String getPreviewBaseUrl() {
+        return previewBaseUrl;
+    }
+
+    public void setPreviewBaseUrl(String previewBaseUrl) {
+        this.previewBaseUrl = previewBaseUrl;
+    }
+
+    public String getPreviewPathPrefix() {
+        return previewPathPrefix;
+    }
+
+    public void setPreviewPathPrefix(String previewPathPrefix) {
+        this.previewPathPrefix = previewPathPrefix;
+    }
+
+    public String getNginxAuthToken() {
+        return nginxAuthToken;
+    }
+
+    public void setNginxAuthToken(String nginxAuthToken) {
+        this.nginxAuthToken = nginxAuthToken;
+    }
+
+    public int getHostPortBase() {
+        return hostPortBase;
+    }
+
+    public void setHostPortBase(int hostPortBase) {
+        this.hostPortBase = hostPortBase;
+    }
+
+    public int getHostPortScanSize() {
+        return hostPortScanSize;
+    }
+
+    public void setHostPortScanSize(int hostPortScanSize) {
+        this.hostPortScanSize = hostPortScanSize;
+    }
+
+    public String getContainerWorkdir() {
+        return containerWorkdir;
+    }
+
+    public void setContainerWorkdir(String containerWorkdir) {
+        this.containerWorkdir = containerWorkdir;
+    }
+
+    public String getContainerNamePrefix() {
+        return containerNamePrefix;
+    }
+
+    public void setContainerNamePrefix(String containerNamePrefix) {
+        this.containerNamePrefix = containerNamePrefix;
+    }
+
+    public String getNetworkName() {
+        return networkName;
+    }
+
+    public void setNetworkName(String networkName) {
+        this.networkName = networkName;
+    }
+
+    public String getNpmRegistry() {
+        return npmRegistry;
+    }
+
+    public void setNpmRegistry(String npmRegistry) {
+        this.npmRegistry = npmRegistry;
+    }
+
+    public String getHttpProxy() {
+        return httpProxy;
+    }
+
+    public void setHttpProxy(String httpProxy) {
+        this.httpProxy = httpProxy;
+    }
+
+    public String getHttpsProxy() {
+        return httpsProxy;
+    }
+
+    public void setHttpsProxy(String httpsProxy) {
+        this.httpsProxy = httpsProxy;
+    }
+
+    public String getNoProxy() {
+        return noProxy;
+    }
+
+    public void setNoProxy(String noProxy) {
+        this.noProxy = noProxy;
+    }
+
+    public String getDockerMemory() {
+        return dockerMemory;
+    }
+
+    public void setDockerMemory(String dockerMemory) {
+        this.dockerMemory = dockerMemory;
+    }
+
+    public String getDockerMemorySwap() {
+        return dockerMemorySwap;
+    }
+
+    public void setDockerMemorySwap(String dockerMemorySwap) {
+        this.dockerMemorySwap = dockerMemorySwap;
+    }
+
+    public Double getDockerCpus() {
+        return dockerCpus;
+    }
+
+    public void setDockerCpus(Double dockerCpus) {
+        this.dockerCpus = dockerCpus;
+    }
+
+    public Integer getPidsLimit() {
+        return pidsLimit;
+    }
+
+    public void setPidsLimit(Integer pidsLimit) {
+        this.pidsLimit = pidsLimit;
+    }
+
+    public int getIdleStopRunMinutes() {
+        return idleStopRunMinutes;
+    }
+
+    public void setIdleStopRunMinutes(int idleStopRunMinutes) {
+        this.idleStopRunMinutes = idleStopRunMinutes;
+    }
+
+    public int getIdleStopContainerMinutes() {
+        return idleStopContainerMinutes;
+    }
+
+    public void setIdleStopContainerMinutes(int idleStopContainerMinutes) {
+        this.idleStopContainerMinutes = idleStopContainerMinutes;
+    }
+
+    public int getRunStartingTimeoutSeconds() {
+        return runStartingTimeoutSeconds;
+    }
+
+    public void setRunStartingTimeoutSeconds(int runStartingTimeoutSeconds) {
+        this.runStartingTimeoutSeconds = runStartingTimeoutSeconds;
+    }
+
+    public int getRunLogKeepPerType() {
+        return runLogKeepPerType;
+    }
+
+    public void setRunLogKeepPerType(int runLogKeepPerType) {
+        this.runLogKeepPerType = runLogKeepPerType;
+    }
+
+    public MongoProperties getMongo() {
+        return mongo;
+    }
+
+    public void setMongo(MongoProperties mongo) {
+        this.mongo = mongo;
+    }
+
+    public static class MongoProperties {
+        /**
+         * 是否启用（要求 workspace image 内包含 mongod/mongosh）
+         */
+        private boolean enabled = false;
+
+        /**
+         * 宿主机数据库持久化根目录：{hostRoot}/{userId}/mongo/...
+         * 示例：/data/funai/database
+         */
+        private String hostRoot;
+
+        /**
+         * 容器内 Mongo 数据目录（mongod --dbpath）
+         */
+        private String containerDbPath = "/data/db";
+
+        /**
+         * 容器内 Mongo 日志目录
+         */
+        private String containerLogDir = "/var/log/mongodb";
+
+        /**
+         * mongod bindIp（推荐 127.0.0.1，仅容器内访问）
+         */
+        private String bindIp = "127.0.0.1";
+
+        /**
+         * mongod 端口
+         */
+        private int port = 27017;
+
+        /**
+         * 逻辑库名前缀：最终 dbName = {dbNamePrefix}{appId}
+         */
+        private String dbNamePrefix = "db_";
+
+        /**
+         * 日志文件名（位于 containerLogDir 下）
+         */
+        private String logFileName = "mongod.log";
+
+        /**
+         * mongod WiredTiger cache 大小（GB，可选）
+         * <p>
+         * MongoDB 默认会按可用内存估算一个较大的 cache（常见约 50%），在 2GiB 机器上会导致“常态内存占用很高”。\n
+         * 建议 2GiB：0.25（约 256MB）或更小。\n
+         * 该值会注入到启动参数：--wiredTigerCacheSizeGB
+         */
+        private Double wiredTigerCacheSizeGB;
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public String getHostRoot() {
+            return hostRoot;
+        }
+
+        public void setHostRoot(String hostRoot) {
+            this.hostRoot = hostRoot;
+        }
+
+        public String getContainerDbPath() {
+            return containerDbPath;
+        }
+
+        public void setContainerDbPath(String containerDbPath) {
+            this.containerDbPath = containerDbPath;
+        }
+
+        public String getContainerLogDir() {
+            return containerLogDir;
+        }
+
+        public void setContainerLogDir(String containerLogDir) {
+            this.containerLogDir = containerLogDir;
+        }
+
+        public String getBindIp() {
+            return bindIp;
+        }
+
+        public void setBindIp(String bindIp) {
+            this.bindIp = bindIp;
+        }
+
+        public int getPort() {
+            return port;
+        }
+
+        public void setPort(int port) {
+            this.port = port;
+        }
+
+        public String getDbNamePrefix() {
+            return dbNamePrefix;
+        }
+
+        public void setDbNamePrefix(String dbNamePrefix) {
+            this.dbNamePrefix = dbNamePrefix;
+        }
+
+        public String getLogFileName() {
+            return logFileName;
+        }
+
+        public void setLogFileName(String logFileName) {
+            this.logFileName = logFileName;
+        }
+
+        public Double getWiredTigerCacheSizeGB() {
+            return wiredTigerCacheSizeGB;
+        }
+
+        public void setWiredTigerCacheSizeGB(Double wiredTigerCacheSizeGB) {
+            this.wiredTigerCacheSizeGB = wiredTigerCacheSizeGB;
+        }
+    }
+}
+
+
