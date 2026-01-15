@@ -1720,8 +1720,8 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
                 if (Files.notExists(dir)) {
                     log.info("workspace app dir cleaned: userId={}, appId={}, dir={}, attempt={}", userId, appId, dir, i);
                     return;
-                }
-            } catch (Exception e) {
+            }
+        } catch (Exception e) {
                 log.warn("cleanup workspace app dir attempt failed: userId={}, appId={}, dir={}, attempt={}, err={}",
                         userId, appId, dir, i, e.getMessage());
                 // 小延迟后重试
@@ -1750,7 +1750,7 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
                 ZipUtils.deleteDirectoryRecursively(quarantined);
                 if (Files.notExists(quarantined)) {
                     log.info("workspace quarantined dir cleaned: userId={}, appId={}, dir={}", userId, appId, quarantined);
-                } else {
+            } else {
                     log.warn("workspace quarantined dir still exists: userId={}, appId={}, dir={}", userId, appId, quarantined);
                 }
             } catch (Exception e) {
