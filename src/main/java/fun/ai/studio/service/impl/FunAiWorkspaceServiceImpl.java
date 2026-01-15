@@ -1700,22 +1700,65 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
         }
 
         // 2) 删除 workspace app 目录（宿主机持久化）
+        // node_modules 可能很大，且若仍有进程写入会导致 DirectoryNotEmpty。这里做“重试 + 失败隔离”，避免残留占用与后续误判。
+        deleteDirBestEffort(hostAppDir, userId, appId);
+    }
+
+    private void deleteDirBestEffort(Path dir, Long userId, Long appId) {
+        if (dir == null) return;
         try {
-            if (Files.exists(hostAppDir)) {
-                ZipUtils.deleteDirectoryRecursively(hostAppDir);
+            if (Files.notExists(dir)) return;
+        } catch (Exception ignore) {
+        }
+
+        // 1) 先尝试多次递归删除（应对短时间内的并发写入）
+        int maxAttempts = 3;
+        for (int i = 1; i <= maxAttempts; i++) {
+            try {
+                if (Files.notExists(dir)) return;
+                ZipUtils.deleteDirectoryRecursively(dir);
+                if (Files.notExists(dir)) {
+                    log.info("workspace app dir cleaned: userId={}, appId={}, dir={}, attempt={}", userId, appId, dir, i);
+                    return;
+                }
+            } catch (Exception e) {
+                log.warn("cleanup workspace app dir attempt failed: userId={}, appId={}, dir={}, attempt={}, err={}",
+                        userId, appId, dir, i, e.getMessage());
+                // 小延迟后重试
+                try {
+                    Thread.sleep(200L * i);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+
+        // 2) 仍失败：将目录改名隔离（Quarantine），避免 apps/{appId} 长期残留
+        try {
+            if (Files.notExists(dir)) return;
+            Path parent = dir.getParent();
+            if (parent == null) return;
+            String newName = dir.getFileName() + ".deleted-" + System.currentTimeMillis();
+            Path quarantined = parent.resolve(newName);
+            Files.move(dir, quarantined);
+            log.warn("workspace app dir quarantined (delete failed): userId={}, appId={}, from={}, to={}",
+                    userId, appId, dir, quarantined);
+
+            // 3) 再尝试清理隔离目录（不保证成功，只做 best-effort）
+            try {
+                ZipUtils.deleteDirectoryRecursively(quarantined);
+                if (Files.notExists(quarantined)) {
+                    log.info("workspace quarantined dir cleaned: userId={}, appId={}, dir={}", userId, appId, quarantined);
+                } else {
+                    log.warn("workspace quarantined dir still exists: userId={}, appId={}, dir={}", userId, appId, quarantined);
+                }
+            } catch (Exception e) {
+                log.warn("cleanup quarantined dir failed: userId={}, appId={}, dir={}, err={}", userId, appId, quarantined, e.getMessage());
             }
         } catch (Exception e) {
-            log.warn("cleanup workspace app dir failed: userId={}, appId={}, dir={}, err={}",
-                    userId, appId, hostAppDir, e.getMessage(), e);
-        }
-        try {
-            if (Files.exists(hostAppDir)) {
-                log.warn("workspace app dir still exists after cleanup: userId={}, appId={}, dir={}",
-                        userId, appId, hostAppDir);
-            } else {
-                log.info("workspace app dir cleaned: userId={}, appId={}, dir={}", userId, appId, hostAppDir);
-            }
-        } catch (Exception ignore) {
+            log.warn("workspace app dir still exists after cleanup (cannot quarantine): userId={}, appId={}, dir={}, err={}",
+                    userId, appId, dir, e.getMessage(), e);
         }
     }
 
