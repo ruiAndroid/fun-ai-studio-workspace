@@ -178,7 +178,7 @@ public class FunAiWorkspaceMongoController {
         if (userId == null || appId == null) {
             throw new IllegalArgumentException("userId/appId 不能为空");
         }
-        // workspace-node 模式：应用归属由小机控制面校验；大机仅负责执行。
+        // workspace-node 模式：应用归属由 API 服务器（小机）控制面校验；Workspace 开发服务器（大机）仅负责执行。
     }
 
     private String containerName(Long userId) {

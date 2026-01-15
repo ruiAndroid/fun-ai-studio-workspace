@@ -24,7 +24,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * workspace-node 内部鉴权：
- * - 允许：本机 loopback + 配置允许 IP（通常是小机公网 IP）
+ * - 允许：本机 loopback + 配置允许 IP（通常是 API 服务器（小机）公网 IP）
  * - 可选：签名校验（HMAC-SHA256）与防重放（nonce）
  */
 public class WorkspaceNodeInternalAuthFilter extends OncePerRequestFilter {
@@ -62,7 +62,7 @@ public class WorkspaceNodeInternalAuthFilter extends OncePerRequestFilter {
             return;
         }
 
-        // 1.5) WebSocket 终端握手：由小机 Nginx 直转发到大机，无法在 Nginx 层附加 HMAC 头
+        // 1.5) WebSocket 终端握手：由 API 服务器（小机）Nginx 直转发到 Workspace 开发服务器（大机），无法在 Nginx 层附加 HMAC 头
         // - 仍保留来源 IP allowlist（上面已校验）
         // - 跳过签名校验（否则握手会被 401）
         String uri = req.getRequestURI();

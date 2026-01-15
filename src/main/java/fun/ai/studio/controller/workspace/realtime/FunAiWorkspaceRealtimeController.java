@@ -66,7 +66,7 @@ public class FunAiWorkspaceRealtimeController {
             @RequestParam(defaultValue = "false") boolean withLog,
             @Parameter(description = "兼容参数：历史版本用于过滤日志类型，当前实现忽略") @RequestParam(required = false) String type
     ) {
-        // workspace-node 模式：应用归属由小机控制面校验；大机仅负责执行与推送
+        // workspace-node 模式：应用归属由 API 服务器（小机）控制面校验；Workspace 开发服务器（大机）仅负责执行与推送
         if (userId == null || appId == null) {
             throw new IllegalArgumentException("userId/appId 不能为空");
         }

@@ -1729,7 +1729,7 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
         if (userId == null || appId == null) {
             throw new IllegalArgumentException("userId/appId 不能为空");
         }
-        // workspace-node 模式：应用归属由小机控制面校验；大机仅负责执行（避免依赖业务 DB）
+        // workspace-node 模式：应用归属由 API 服务器（小机）控制面校验；Workspace 开发服务器（大机）仅负责执行（避免依赖业务 DB）
     }
 
     private String containerNameFromMetaOrDefault(Path hostUserDir, Long userId) {

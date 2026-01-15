@@ -70,7 +70,7 @@ public class WorkspaceTerminalWebSocketHandler extends TextWebSocketHandler {
             return;
         }
 
-        // workspace-node 模式：应用归属由小机控制面校验；大机仅负责执行。
+        // workspace-node 模式：应用归属由 API 服务器（小机）控制面校验；Workspace 开发服务器（大机）仅负责执行。
 
         // 确保容器/目录就绪（编辑器打开时应该已做过，但这里兜底）
         activityTracker.touch(userId);

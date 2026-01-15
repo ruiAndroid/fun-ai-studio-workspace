@@ -11,6 +11,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -80,6 +81,21 @@ public class FunAiWorkspaceInternalController {
                     .build();
         } catch (Exception e) {
             log.warn("nginx port lookup failed: userId={}, error={}", userId, e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
+    }
+
+    @PostMapping("/maintenance/app-deleted")
+    @Operation(summary = "（内部）应用删除后的 workspace 清理", description = "供 API 服务器（小机）控制面调用：清理 {hostRoot}/{userId}/apps/{appId}，必要时 stopRun。")
+    public ResponseEntity<Void> onAppDeleted(
+            @Parameter(description = "用户ID", required = true) @RequestParam Long userId,
+            @Parameter(description = "应用ID", required = true) @RequestParam Long appId
+    ) {
+        try {
+            workspaceServiceImpl.cleanupWorkspaceOnAppDeleted(userId, appId);
+            return ResponseEntity.noContent().build();
+        } catch (Exception e) {
+            log.warn("cleanup workspace on app deleted failed: userId={}, appId={}, err={}", userId, appId, e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
         }
     }
