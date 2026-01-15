@@ -84,6 +84,21 @@ public class WorkspaceProperties {
      */
     private String npmRegistry = "http://verdaccio:4873";
 
+    /**
+     * npm cache 策略（控制容器磁盘膨胀）：
+     * - APP：将 npm cache 放到应用目录内（{APP_DIR}/.npm-cache），删除项目目录即可回收（推荐）
+     * - CONTAINER：使用 npm 默认缓存（通常是 ~/.npm），可能导致用户容器层长期膨胀
+     * - DISABLED：将 cache 放到临时目录并在任务结束后清理（更省磁盘，但会降低重复安装速度；有 Verdaccio 时影响较小）
+     */
+    private String npmCacheMode = "APP";
+
+    /**
+     * npm cache 最大大小（MB），超过后会在受控任务中触发清理。
+     * - 0 或负数：不限制
+     * - 仅对 APP/DISABLED 模式生效（CONTAINER 模式不做自动清理，避免误删用户手工状态）
+     */
+    private long npmCacheMaxMb = 2048;
+
     private String httpProxy;
     private String httpsProxy;
     private String noProxy;
@@ -253,6 +268,22 @@ public class WorkspaceProperties {
 
     public void setNpmRegistry(String npmRegistry) {
         this.npmRegistry = npmRegistry;
+    }
+
+    public String getNpmCacheMode() {
+        return npmCacheMode;
+    }
+
+    public void setNpmCacheMode(String npmCacheMode) {
+        this.npmCacheMode = npmCacheMode;
+    }
+
+    public long getNpmCacheMaxMb() {
+        return npmCacheMaxMb;
+    }
+
+    public void setNpmCacheMaxMb(long npmCacheMaxMb) {
+        this.npmCacheMaxMb = npmCacheMaxMb;
     }
 
     public String getHttpProxy() {

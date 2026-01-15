@@ -391,6 +391,39 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
         long logTs = System.currentTimeMillis();
         String logFile = runDir + "/run-" + op.toLowerCase() + "-" + appId + "-" + logTs + ".log";
 
+        String npmCacheMode = (props.getNpmCacheMode() == null ? "APP" : props.getNpmCacheMode().trim());
+        if (npmCacheMode.isEmpty()) npmCacheMode = "APP";
+        npmCacheMode = npmCacheMode.toUpperCase();
+        long npmCacheMaxMb = props.getNpmCacheMaxMb();
+
+        // npm cache 策略：避免容器层 ~/.npm 膨胀导致“删项目不回收磁盘”
+        // - APP：缓存落到 {APP_DIR}/.npm-cache（删项目目录即可回收）
+        // - DISABLED：缓存落到 /tmp 并在任务结束后删除
+        // - CONTAINER：保持默认（不推荐）
+        String npmCacheSnippet = ""
+                + "NPM_CACHE_MODE='" + npmCacheMode.replace("'", "") + "'\n"
+                + "NPM_CACHE_MAX_MB='" + Math.max(0, npmCacheMaxMb) + "'\n"
+                + "NPM_CACHE_DIR=''\n"
+                + "if [ \"$NPM_CACHE_MODE\" = \"APP\" ]; then NPM_CACHE_DIR=\"$APP_DIR/.npm-cache\"; fi\n"
+                + "if [ \"$NPM_CACHE_MODE\" = \"DISABLED\" ]; then NPM_CACHE_DIR=\"/tmp/npm-cache-" + userId + "-" + appId + "\"; fi\n"
+                + "if [ -n \"$NPM_CACHE_DIR\" ]; then\n"
+                + "  mkdir -p \"$NPM_CACHE_DIR\" >/dev/null 2>&1 || true\n"
+                + "  export NPM_CONFIG_CACHE=\"$NPM_CACHE_DIR\"\n"
+                + "  export npm_config_cache=\"$NPM_CACHE_DIR\"\n"
+                + "  echo \"[npm] cache=$NPM_CACHE_DIR mode=$NPM_CACHE_MODE\" >>\"$LOG_FILE\" 2>&1\n"
+                + "fi\n"
+                + "prune_npm_cache() {\n"
+                + "  [ -z \"$NPM_CACHE_DIR\" ] && return 0\n"
+                + "  [ \"$NPM_CACHE_MODE\" = \"CONTAINER\" ] && return 0\n"
+                + "  [ \"$NPM_CACHE_MAX_MB\" -le 0 ] && return 0\n"
+                + "  sz=$(du -sm \"$NPM_CACHE_DIR\" 2>/dev/null | awk '{print $1}' || echo 0)\n"
+                + "  [ -z \"$sz\" ] && sz=0\n"
+                + "  if [ \"$sz\" -gt \"$NPM_CACHE_MAX_MB\" ]; then\n"
+                + "    echo \"[npm] cache too large: ${sz}MB > ${NPM_CACHE_MAX_MB}MB, cleaning...\" >>\"$LOG_FILE\" 2>&1\n"
+                + "    rm -rf \"$NPM_CACHE_DIR/_cacache\" \"$NPM_CACHE_DIR/_npx\" 2>/dev/null || true\n"
+                + "  fi\n"
+                + "}\n";
+
         String innerScript;
         if ("BUILD".equals(op)) {
             innerScript = ""
@@ -412,14 +445,17 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
                     + "  if [ -z \"$NPM_CONFIG_REGISTRY\" ] && [ -n \"$npm_config_registry\" ]; then npm config set registry \"$npm_config_registry\" >/dev/null 2>&1 || true; fi\n"
                     + "  reg=$(npm config get registry 2>/dev/null || true)\n"
                     + "  if [ -n \"$reg\" ]; then echo \"[build] npm registry: $reg\" >>\"$LOG_FILE\" 2>&1; fi\n"
+                    + npmCacheSnippet
                     + "  if [ ! -d node_modules ]; then echo \"[build] npm install (include dev)...\" >>\"$LOG_FILE\"; npm install --include=dev >>\"$LOG_FILE\" 2>&1 || (echo \"[build] npm install failed, retry with --legacy-peer-deps\" >>\"$LOG_FILE\"; npm install --include=dev --legacy-peer-deps >>\"$LOG_FILE\" 2>&1); fi\n"
                     + "  if [ ! -x node_modules/.bin/tsc ]; then echo \"[build] tsc not found, npm install (include dev)...\" >>\"$LOG_FILE\"; npm install --include=dev >>\"$LOG_FILE\" 2>&1 || (echo \"[build] npm install failed, retry with --legacy-peer-deps\" >>\"$LOG_FILE\"; npm install --include=dev --legacy-peer-deps >>\"$LOG_FILE\" 2>&1); fi\n"
+                    + "  prune_npm_cache || true\n"
                     + "  echo \"[build] npm run build\" >>\"$LOG_FILE\" 2>&1\n"
                     + "  set +e\n"
                     + "  npm run build >>\"$LOG_FILE\" 2>&1\n"
                     + "  code=$?\n"
                     + "  set -e\n"
                     + "fi\n"
+                    + "if [ \"$NPM_CACHE_MODE\" = \"DISABLED\" ] && [ -n \"$NPM_CACHE_DIR\" ]; then rm -rf \"$NPM_CACHE_DIR\" 2>/dev/null || true; fi\n"
                     + "FINISHED_AT=$(date +%s)\n"
                     + "rm -f \"$PID_FILE\" || true\n"
                     + "printf '{\"appId\":" + appId + ",\"type\":\"BUILD\",\"pid\":null,\"startedAt\":%s,\"finishedAt\":%s,\"exitCode\":%s,\"logPath\":\"" + logFile + "\"}' \"$STARTED_AT\" \"$FINISHED_AT\" \"$code\" > \"$META_FILE\"\n";
@@ -443,12 +479,15 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
                     + "  if [ -z \"$NPM_CONFIG_REGISTRY\" ] && [ -n \"$npm_config_registry\" ]; then npm config set registry \"$npm_config_registry\" >/dev/null 2>&1 || true; fi\n"
                     + "  reg=$(npm config get registry 2>/dev/null || true)\n"
                     + "  if [ -n \"$reg\" ]; then echo \"[install] npm registry: $reg\" >>\"$LOG_FILE\" 2>&1; fi\n"
+                    + npmCacheSnippet
                     + "  echo \"[install] npm install (include dev)\" >>\"$LOG_FILE\" 2>&1\n"
                     + "  set +e\n"
                     + "  npm install --include=dev >>\"$LOG_FILE\" 2>&1 || (echo \"[install] npm install failed, retry with --legacy-peer-deps\" >>\"$LOG_FILE\"; npm install --include=dev --legacy-peer-deps >>\"$LOG_FILE\" 2>&1)\n"
                     + "  code=$?\n"
                     + "  set -e\n"
+                    + "  prune_npm_cache || true\n"
                     + "fi\n"
+                    + "if [ \"$NPM_CACHE_MODE\" = \"DISABLED\" ] && [ -n \"$NPM_CACHE_DIR\" ]; then rm -rf \"$NPM_CACHE_DIR\" 2>/dev/null || true; fi\n"
                     + "FINISHED_AT=$(date +%s)\n"
                     + "rm -f \"$PID_FILE\" || true\n"
                     + "printf '{\"appId\":" + appId + ",\"type\":\"INSTALL\",\"pid\":null,\"startedAt\":%s,\"finishedAt\":%s,\"exitCode\":%s,\"logPath\":\"" + logFile + "\"}' \"$STARTED_AT\" \"$FINISHED_AT\" \"$code\" > \"$META_FILE\"\n";
@@ -477,8 +516,10 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
                     + "if [ -z \"$NPM_CONFIG_REGISTRY\" ] && [ -n \"$npm_config_registry\" ]; then npm config set registry \"$npm_config_registry\" >/dev/null 2>&1 || true; fi\n"
                     + "reg=$(npm config get registry 2>/dev/null || true)\n"
                     + "if [ -n \"$reg\" ]; then echo \"[preview] npm registry: $reg\" >>\"$LOG_FILE\" 2>&1; fi\n"
+                    + npmCacheSnippet
                     + "if [ ! -d node_modules ]; then echo \"[preview] npm install (include dev)...\" >>\"$LOG_FILE\"; npm install --include=dev >>\"$LOG_FILE\" 2>&1 || (echo \"[preview] npm install failed, retry with --legacy-peer-deps\" >>\"$LOG_FILE\"; npm install --include=dev --legacy-peer-deps >>\"$LOG_FILE\" 2>&1); fi\n"
                     + "if [ \"$RUN_SCRIPT\" = \"server\" ] && [ ! -x node_modules/.bin/tsx ]; then echo \"[preview] tsx not found, npm install (include dev)...\" >>\"$LOG_FILE\"; npm install --include=dev >>\"$LOG_FILE\" 2>&1 || (echo \"[preview] npm install failed, retry with --legacy-peer-deps\" >>\"$LOG_FILE\"; npm install --include=dev --legacy-peer-deps >>\"$LOG_FILE\" 2>&1); fi\n"
+                    + "prune_npm_cache || true\n"
                     // 兼容项目脚本：
                     // - dev/preview：通常是前端(vite)监听 5173；不要导出 PORT，避免同仓库后端也读 PORT=5173 导致 EADDRINUSE
                     // - start/server：通常是后端入口，需要 PORT=5173 以匹配网关转发
@@ -597,7 +638,9 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
                     + "if [ -z \"$NPM_CONFIG_REGISTRY\" ] && [ -n \"$npm_config_registry\" ]; then npm config set registry \"$npm_config_registry\" >/dev/null 2>&1 || true; fi\n"
                     + "reg=$(npm config get registry 2>/dev/null || true)\n"
                     + "if [ -n \"$reg\" ]; then echo \"[dev-start] npm registry: $reg\" >>\"$LOG_FILE\" 2>&1; fi\n"
+                    + npmCacheSnippet
                     + "if [ ! -d node_modules ]; then echo \"[dev-start] npm install (include dev)...\" >>\"$LOG_FILE\"; npm install --include=dev >>\"$LOG_FILE\" 2>&1 || (echo \"[dev-start] npm install failed, retry with --legacy-peer-deps\" >>\"$LOG_FILE\"; npm install --include=dev --legacy-peer-deps >>\"$LOG_FILE\" 2>&1); fi\n"
+                    + "prune_npm_cache || true\n"
                     + "echo \"[dev-start] npm run dev on $PORT\" >>\"$LOG_FILE\" 2>&1\n"
                     + "export CHOKIDAR_USEPOLLING=true\n"
                     + "export CHOKIDAR_INTERVAL=1000\n"
