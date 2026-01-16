@@ -1,24 +1,30 @@
 package fun.ai.studio.config;
 
 import jakarta.servlet.FilterChain;
+import jakarta.servlet.ReadListener;
+import jakarta.servlet.ServletInputStream;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.servlet.http.HttpServletRequestWrapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
 import org.springframework.util.StreamUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
-import org.springframework.web.util.ContentCachingRequestWrapper;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
+import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -51,12 +57,8 @@ public class WorkspaceNodeInternalAuthFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
             throws ServletException, IOException {
-        ContentCachingRequestWrapper req = (request instanceof ContentCachingRequestWrapper)
-                ? (ContentCachingRequestWrapper) request
-                : new ContentCachingRequestWrapper(request);
-
         // 1) 先做来源 IP 限制（强烈建议配合安全组一起做）
-        String remote = req.getRemoteAddr();
+        String remote = request.getRemoteAddr();
         if (!isAllowedIp(remote, props == null ? List.of() : props.allowedIpList())) {
             deny(response, 403, "forbidden");
             return;
@@ -65,21 +67,42 @@ public class WorkspaceNodeInternalAuthFilter extends OncePerRequestFilter {
         // 1.5) WebSocket 终端握手：由 API 服务器（小机）Nginx 直转发到 Workspace 开发服务器（大机），无法在 Nginx 层附加 HMAC 头
         // - 仍保留来源 IP allowlist（上面已校验）
         // - 跳过签名校验（否则握手会被 401）
-        String uri = req.getRequestURI();
+        String uri = request.getRequestURI();
         if (uri != null && uri.startsWith("/api/fun-ai/workspace/ws/")) {
-            filterChain.doFilter(req, response);
+            filterChain.doFilter(request, response);
             return;
         }
 
         // 2) 签名校验（可选）
         if (props != null && props.isRequireSignature()) {
-            if (!verifySignature(req, props)) {
-                deny(response, 401, "unauthorized");
+            // 重要：multipart 上传如果在 filter 里读取 InputStream，会导致后续 MultipartResolver 读不到文件 part，报
+            // "Required part 'file' is not present."
+            // 对这类请求，建议依赖安全组 + IP allowlist（仍然很强），跳过 body 签名校验。
+            if (!shouldSkipSignatureFor(request)) {
+                byte[] body = StreamUtils.copyToByteArray(request.getInputStream());
+                if (!verifySignature(request, body, props)) {
+                    deny(response, 401, "unauthorized");
+                    return;
+                }
+                HttpServletRequest wrapped = new CachedBodyRequestWrapper(request, body);
+                filterChain.doFilter(wrapped, response);
                 return;
             }
         }
 
-        filterChain.doFilter(req, response);
+        filterChain.doFilter(request, response);
+    }
+
+    private boolean shouldSkipSignatureFor(HttpServletRequest req) {
+        if (req == null) return true;
+        String ct = req.getContentType();
+        if (ct != null && ct.toLowerCase(Locale.ROOT).startsWith("multipart/")) return true;
+        String uri = req.getRequestURI();
+        // 文件上传：multipart
+        if (uri != null && (uri.contains("/api/fun-ai/workspace/files/upload-zip") || uri.contains("/api/fun-ai/workspace/files/upload-file"))) {
+            return true;
+        }
+        return false;
     }
 
     private boolean isAllowedIp(String remoteAddr, List<String> allow) {
@@ -92,7 +115,7 @@ public class WorkspaceNodeInternalAuthFilter extends OncePerRequestFilter {
         return allow.contains(remoteAddr);
     }
 
-    private boolean verifySignature(ContentCachingRequestWrapper req, WorkspaceNodeInternalAuthProperties p) {
+    private boolean verifySignature(HttpServletRequest req, byte[] body, WorkspaceNodeInternalAuthProperties p) {
         try {
             String secret = p.getSharedSecret();
             if (secret == null || secret.isBlank() || "CHANGE_ME_STRONG_SECRET".equals(secret)) {
@@ -115,13 +138,6 @@ public class WorkspaceNodeInternalAuthFilter extends OncePerRequestFilter {
             Long prev = nonceSeenAtSec.putIfAbsent(nonce, now);
             if (prev != null) return false;
 
-            // 读取 body（ContentCachingRequestWrapper 会缓存）
-            byte[] body = req.getContentAsByteArray();
-            if (body == null || body.length == 0) {
-                // 触发一次读取，保证缓存可用（对 GET 等无 body 的请求无影响）
-                StreamUtils.copyToByteArray(req.getInputStream());
-                body = req.getContentAsByteArray();
-            }
             String bodySha256 = sha256Hex(body == null ? new byte[0] : body);
 
             String method = req.getMethod() == null ? "" : req.getMethod();
@@ -183,6 +199,51 @@ public class WorkspaceNodeInternalAuthFilter extends OncePerRequestFilter {
         resp.setStatus(code);
         resp.setContentType(MediaType.TEXT_PLAIN_VALUE);
         resp.getWriter().write(msg);
+    }
+
+    /**
+     * 让 request body 可重复读取（给 Spring MVC / MultipartResolver / @RequestBody 使用）。
+     *
+     * <p>注意：这里只用于非 multipart 的签名校验场景（multipart 直接跳过签名以避免大文件读入内存）。</p>
+     */
+    private static final class CachedBodyRequestWrapper extends HttpServletRequestWrapper {
+        private final byte[] body;
+
+        CachedBodyRequestWrapper(HttpServletRequest request, byte[] body) {
+            super(request);
+            this.body = (body == null) ? new byte[0] : body;
+        }
+
+        @Override
+        public ServletInputStream getInputStream() {
+            ByteArrayInputStream in = new ByteArrayInputStream(body);
+            return new ServletInputStream() {
+                @Override
+                public int read() {
+                    return in.read();
+                }
+
+                @Override
+                public boolean isFinished() {
+                    return in.available() <= 0;
+                }
+
+                @Override
+                public boolean isReady() {
+                    return true;
+                }
+
+                @Override
+                public void setReadListener(ReadListener readListener) {
+                    // not async
+                }
+            };
+        }
+
+        @Override
+        public BufferedReader getReader() {
+            return new BufferedReader(new InputStreamReader(getInputStream(), StandardCharsets.UTF_8));
+        }
     }
 }
 
