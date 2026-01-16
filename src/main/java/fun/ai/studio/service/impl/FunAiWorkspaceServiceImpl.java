@@ -324,8 +324,18 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
         }
         String script = pickPreviewScript(pkg);
         if (script == null) {
-            throw new IllegalArgumentException("当前项目未定义可用于预览/部署的脚本。请在 package.json 的 scripts 中添加 start 或 preview（推荐），"
-                    + "或至少提供 dev（开发模式）。");
+            String raw;
+            try {
+                raw = Files.readString(pkg, StandardCharsets.UTF_8);
+            } catch (Exception ignore) {
+                raw = null;
+            }
+            List<String> keys = detectScriptKeysBestEffort(raw);
+            log.warn("preview script not found: userId={}, appId={}, packageJson={}, detectedScripts={}",
+                    userId, appId, pkg, keys);
+            throw new IllegalArgumentException("当前项目未定义可用于预览/部署的脚本（package.json=" + pkg + "）。"
+                    + "检测到 scripts=" + keys + "。"
+                    + "请在 scripts 中添加 start 或 preview（推荐），或至少提供 dev（开发模式）。");
         }
         // 将具体脚本名传入受控运行：START 模式统一做端口/BASE_PATH 注入。
         return startManagedRun(userId, appId, "START:" + script);
@@ -1547,6 +1557,42 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
         // 注意：很多后端项目不会对 "/" 提供页面，因此放到最后兜底，避免“预览 URL 打开 404”的错觉。
         if (hasNpmScript(packageJson, "server")) return "server";
         return null;
+    }
+
+    /**
+     * 从 package.json 原始文本中尽力提取 scripts 的 key 列表（仅用于诊断输出）。
+     */
+    private List<String> detectScriptKeysBestEffort(String rawJson) {
+        if (!StringUtils.hasText(rawJson)) return List.of();
+        try {
+            // 先尝试快速 JSON 解析（如果成功，结果最准确）
+            Map<?, ?> m = objectMapper.readValue(rawJson, Map.class);
+            Object scripts = m == null ? null : m.get("scripts");
+            if (scripts instanceof Map<?, ?> sm) {
+                return sm.keySet().stream()
+                        .filter(k -> k != null)
+                        .map(k -> String.valueOf(k))
+                        .sorted()
+                        .toList();
+            }
+        } catch (Exception ignore) {
+        }
+        try {
+            // 解析失败时用正则在 scripts 块中抓取 key
+            java.util.regex.Pattern p = java.util.regex.Pattern.compile("\"scripts\"\\s*:\\s*\\{([\\s\\S]*?)\\}\\s*,");
+            java.util.regex.Matcher m = p.matcher(rawJson);
+            String block = m.find() ? m.group(1) : rawJson;
+            java.util.regex.Pattern pKey = java.util.regex.Pattern.compile("\"([^\"]+)\"\\s*:");
+            java.util.regex.Matcher km = pKey.matcher(block);
+            java.util.Set<String> out = new java.util.HashSet<>();
+            while (km.find()) {
+                String k = km.group(1);
+                if (k != null && !k.isBlank()) out.add(k.trim());
+            }
+            return out.stream().sorted().toList();
+        } catch (Exception ignore2) {
+            return List.of();
+        }
     }
 
     private List<FunAiWorkspaceFileNode> listDirRecursive(Path root, Path dir, int depth, Set<String> ignores, Counter counter) {
