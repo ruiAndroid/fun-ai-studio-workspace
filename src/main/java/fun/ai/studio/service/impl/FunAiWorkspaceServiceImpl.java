@@ -519,7 +519,6 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
                     // - 对纯前端（vite dev/preview）：仍需要 base=/ws/{userId}/，保证浏览器请求的静态资源路径带 /ws 前缀
                     // - 对后端（server/start）：不应要求项目支持 basePath，默认用 "/"（否则上游会在 /ws 下挂载导致访问 / 404）
                     + "BASE_PATH_ROOT='/'\n"
-                    + "BASE_PATH_WS='/ws/" + userId + "/'\n"
                     + "RUN_SCRIPT='" + (selectedScript == null ? "start" : selectedScript.replace("'", "")) + "'\n"
                     + "echo \"[preview] start at $(date -Is)\" >>\"$LOG_FILE\" 2>&1\n"
                     + "cd \"$APP_DIR\" >>\"$LOG_FILE\" 2>&1 || true\n"
@@ -542,7 +541,6 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
                     + "export HOST=\"0.0.0.0\"\n"
                     + "if [ \"$RUN_SCRIPT\" = \"server\" ] || [ \"$RUN_SCRIPT\" = \"start\" ]; then export PORT=\"$PORT\"; fi\n"
                     + "BASE_PATH=\"$BASE_PATH_ROOT\"\n"
-                    + "if [ \"$RUN_SCRIPT\" = \"preview\" ] || [ \"$RUN_SCRIPT\" = \"dev\" ]; then BASE_PATH=\"$BASE_PATH_WS\"; fi\n"
                     + "export BASE_PATH=\"$BASE_PATH\"\n"
                     // 对全栈/后端入口（start/server）：尽量走“生产模式”，避免 HTML 引用 /@vite/client、/src/* 等开发期绝对路径
                     // 同时尝试执行 build（若不存在 build 脚本则不报错），让后端可以提供构建后的静态资源（若项目支持）
@@ -711,7 +709,7 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
                     + "}\n"
                     + "inode=$(find_inode)\n"
                     + "if [ -n \"$inode\" ]; then kill_by_inode \"$inode\"; fi\n"
-                    + "BASE='/ws/" + userId + "/'\n"
+                    + "BASE='/'\n"
                     + "setsid sh -c \"npm run dev -- --host 0.0.0.0 --port $PORT --strictPort --base $BASE\" >>\"$LOG_FILE\" 2>&1 < /dev/null &\n"
                     + "pid=$!\n"
                     + "echo \"$pid\" > \"$PID_FILE\"\n"
