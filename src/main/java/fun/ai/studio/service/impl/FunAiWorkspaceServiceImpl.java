@@ -318,7 +318,7 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
         // 这里做一个温和的 fallback：start -> preview -> dev；都没有则报错（避免盲跑）。
         Path hostAppDir = resolveHostWorkspaceDir(userId).resolve("apps").resolve(String.valueOf(appId));
         assertAppReadyForRun(userId, appId, hostAppDir, "preview");
-        Path pkg = findPackageJson(hostAppDir, 2);
+        Path pkg = findPackageJsonForRun(hostAppDir, 2);
         if (pkg == null) {
             throw new IllegalArgumentException("未找到 package.json（最大深度=2）：请先上传/创建项目文件");
         }
@@ -1477,6 +1477,67 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
     }
 
     /**
+     * 为 run/preview 等“需要 scripts”的动作选择最合适的 package.json。
+     *
+     * <p>常见场景：全栈/monorepo 项目会存在多个 package.json（例如 apps/{appId}/package.json 与 apps/{appId}/server/package.json）。
+     * Files.walk 的遍历顺序不稳定，容易误选到子包 package.json（没有 scripts），导致误报“未定义预览脚本”。</p>
+     *
+     * 选择策略：
+     * - 优先 apps/{appId}/package.json（项目根）
+     * - 其次：包含 scripts 字段的候选
+     * - 再其次：回退到任意一个候选
+     */
+    private Path findPackageJsonForRun(Path hostAppDir, int maxDepth) {
+        if (hostAppDir == null || Files.notExists(hostAppDir) || !Files.isDirectory(hostAppDir)) return null;
+
+        // 1) 强优先：项目根 package.json
+        Path rootPkg = hostAppDir.resolve("package.json");
+        if (Files.exists(rootPkg) && Files.isRegularFile(rootPkg)) {
+            return rootPkg;
+        }
+
+        int depth = Math.max(0, Math.min(10, maxDepth));
+        Set<String> ignores = defaultIgnoredNames();
+        List<Path> candidates;
+        try (var stream = Files.walk(hostAppDir, depth + 1)) {
+            candidates = stream
+                    .filter(p -> p != null && Files.isRegularFile(p))
+                    .filter(p -> "package.json".equalsIgnoreCase(p.getFileName().toString()))
+                    .filter(p -> {
+                        Path rel;
+                        try {
+                            rel = hostAppDir.normalize().relativize(p.normalize());
+                        } catch (Exception e) {
+                            rel = null;
+                        }
+                        if (rel == null) return true;
+                        for (Path part : rel) {
+                            if (part != null && ignores.contains(part.toString())) return false;
+                        }
+                        return true;
+                    })
+                    .toList();
+        } catch (Exception ignore) {
+            return null;
+        }
+        if (candidates == null || candidates.isEmpty()) return null;
+
+        // 2) 优先选择包含 scripts 字段的候选
+        for (Path p : candidates) {
+            try {
+                String raw = Files.readString(p, StandardCharsets.UTF_8);
+                if (StringUtils.hasText(raw) && raw.contains("\"scripts\"")) {
+                    return p;
+                }
+            } catch (Exception ignore) {
+            }
+        }
+
+        // 3) 兜底：返回任意一个
+        return candidates.get(0);
+    }
+
+    /**
      * run/start 前置校验：不允许隐式创建 apps/{appId} 目录，避免 userId/appId 误传造成宿主机垃圾目录。
      */
     private void assertAppReadyForRun(Long userId, Long appId, Path hostAppDir, String op) {
@@ -1502,7 +1563,7 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
                     + "确认 apps/" + appId + " 下存在项目文件后，再执行 /api/fun-ai/workspace/run/" + action);
         }
         // 进一步兜底：绝大多数任务都依赖 package.json；提前给出更友好提示，避免盲跑写日志再失败。
-        Path pkg = findPackageJson(hostAppDir, 2);
+        Path pkg = findPackageJsonForRun(hostAppDir, 2);
         if (pkg == null) {
             throw new IllegalArgumentException("未找到 package.json（最大深度=2）：请先导入/创建项目文件，再执行 run/start（或 build/install/preview）");
         }
