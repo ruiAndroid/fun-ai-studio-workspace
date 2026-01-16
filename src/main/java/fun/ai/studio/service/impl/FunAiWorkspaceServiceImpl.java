@@ -1509,7 +1509,20 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
             Object v = sm.get(scriptName);
             return v != null && StringUtils.hasText(String.valueOf(v));
         } catch (Exception ignore) {
-            return false;
+            // 兜底：少数项目 package.json 可能包含重复 key/非常规格式，Jackson 解析失败会导致误判“没有脚本”。
+            // 这里用正则在原始文本中做一次轻量探测，避免明明有 dev 脚本却被判定为不存在。
+            try {
+                String raw = Files.readString(packageJson, StandardCharsets.UTF_8);
+                if (!StringUtils.hasText(raw)) return false;
+                String s = raw;
+                // 仅做简单匹配： "scripts": { ... "dev": "..." ... }
+                // 不追求严格 JSON 解析，只用于“脚本是否存在”的布尔判断。
+                java.util.regex.Pattern p = java.util.regex.Pattern.compile("\"scripts\"\\s*:\\s*\\{[\\s\\S]*?\"" +
+                        java.util.regex.Pattern.quote(scriptName) + "\"\\s*:\\s*\"");
+                return p.matcher(s).find();
+            } catch (Exception ignore2) {
+                return false;
+            }
         }
     }
 
