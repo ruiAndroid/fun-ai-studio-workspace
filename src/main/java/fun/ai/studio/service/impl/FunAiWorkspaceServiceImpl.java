@@ -1514,12 +1514,18 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
             try {
                 String raw = Files.readString(packageJson, StandardCharsets.UTF_8);
                 if (!StringUtils.hasText(raw)) return false;
-                String s = raw;
-                // 仅做简单匹配： "scripts": { ... "dev": "..." ... }
-                // 不追求严格 JSON 解析，只用于“脚本是否存在”的布尔判断。
-                java.util.regex.Pattern p = java.util.regex.Pattern.compile("\"scripts\"\\s*:\\s*\\{[\\s\\S]*?\"" +
-                        java.util.regex.Pattern.quote(scriptName) + "\"\\s*:\\s*\"");
-                return p.matcher(s).find();
+                // 优先：在 scripts 对象内匹配（更精确）
+                java.util.regex.Pattern p1 = java.util.regex.Pattern.compile(
+                        "\"scripts\"\\s*:\\s*\\{[\\s\\S]*?\"" + java.util.regex.Pattern.quote(scriptName) + "\"\\s*:\\s*\""
+                );
+                if (p1.matcher(raw).find()) return true;
+
+                // 再兜底：直接匹配顶层任意位置的精确 key（例如 "dev": "..."），避免 scripts 结构不标准导致误判。
+                // 注意：这里匹配的是精确 key（不会把 "dev:server" 当成 "dev"）。
+                java.util.regex.Pattern p2 = java.util.regex.Pattern.compile(
+                        "\"" + java.util.regex.Pattern.quote(scriptName) + "\"\\s*:\\s*\""
+                );
+                return p2.matcher(raw).find();
             } catch (Exception ignore2) {
                 return false;
             }
