@@ -38,6 +38,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -315,8 +316,8 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
         // - 全栈/后端项目：通常 scripts.start
         // - 纯前端项目：可能只有 scripts.preview 或 scripts.dev
         // 这里做一个温和的 fallback：start -> preview -> dev；都没有则报错（避免盲跑）。
-        FunAiWorkspaceProjectDirResponse dir = ensureAppDir(userId, appId);
-        Path hostAppDir = Paths.get(dir.getHostAppDir());
+        Path hostAppDir = resolveHostWorkspaceDir(userId).resolve("apps").resolve(String.valueOf(appId));
+        assertAppReadyForRun(userId, appId, hostAppDir, "preview");
         Path pkg = findPackageJson(hostAppDir, 2);
         if (pkg == null) {
             throw new IllegalArgumentException("未找到 package.json（最大深度=2）：请先上传/创建项目文件");
@@ -354,7 +355,12 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
      */
     private FunAiWorkspaceRunStatusResponse startManagedRun(Long userId, Long appId, String type) {
         FunAiWorkspaceInfoResponse ws = ensureWorkspace(userId);
-        ensureAppDir(userId, appId);
+
+        // 重要：run/start 不应隐式创建 apps/{appId} 目录。
+        // workspace-dev（大机）无法访问业务库判断 appId 是否真实存在；如果 userId/appId 写错，自动 mkdir 会在宿主机产生垃圾目录。
+        // 因此这里改为“只校验，不创建”：目录不存在直接提示先导入项目/创建目录。
+        Path hostAppDir = resolveHostWorkspaceDir(userId).resolve("apps").resolve(String.valueOf(appId));
+        assertAppReadyForRun(userId, appId, hostAppDir, type);
 
         String containerName = ws.getContainerName();
         String containerWorkdir = props.getContainerWorkdir();
@@ -1457,6 +1463,38 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
                     .orElse(null);
         } catch (Exception ignore) {
             return null;
+        }
+    }
+
+    /**
+     * run/start 前置校验：不允许隐式创建 apps/{appId} 目录，避免 userId/appId 误传造成宿主机垃圾目录。
+     */
+    private void assertAppReadyForRun(Long userId, Long appId, Path hostAppDir, String op) {
+        if (userId == null || appId == null) {
+            throw new IllegalArgumentException("userId/appId 不能为空");
+        }
+        if (hostAppDir == null || Files.notExists(hostAppDir) || !Files.isDirectory(hostAppDir)) {
+            String action = "start";
+            if (op != null && !op.isBlank()) {
+                String x = op.trim();
+                int idx = x.indexOf(':');
+                if (idx > 0) x = x.substring(0, idx).trim();
+                x = x.toUpperCase(Locale.ROOT);
+                // 将内部 op 映射为对外 endpoint 名称
+                if ("DEV".equals(x)) action = "start";
+                else if ("BUILD".equals(x)) action = "build";
+                else if ("INSTALL".equals(x)) action = "install";
+                else if ("START".equals(x) || "PREVIEW".equals(x)) action = "preview";
+                else action = x.toLowerCase(Locale.ROOT);
+            }
+            throw new IllegalArgumentException("应用目录不存在（appId 可能不存在或尚未导入代码）："
+                    + "请先调用 /api/fun-ai/workspace/files/ensure-dir 或 /api/fun-ai/workspace/files/upload-zip，"
+                    + "确认 apps/" + appId + " 下存在项目文件后，再执行 /api/fun-ai/workspace/run/" + action);
+        }
+        // 进一步兜底：绝大多数任务都依赖 package.json；提前给出更友好提示，避免盲跑写日志再失败。
+        Path pkg = findPackageJson(hostAppDir, 2);
+        if (pkg == null) {
+            throw new IllegalArgumentException("未找到 package.json（最大深度=2）：请先导入/创建项目文件，再执行 run/start（或 build/install/preview）");
         }
     }
 
