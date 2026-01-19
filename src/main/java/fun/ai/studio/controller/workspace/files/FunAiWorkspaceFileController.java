@@ -259,8 +259,9 @@ public class FunAiWorkspaceFileController {
             Path hostAppDir = Paths.get(workspaceService.ensureAppDir(userId, appId).getHostAppDir());
 
             Set<String> excludes = includeNodeModules
-                    ? Set.of(".git", "dist", "build", ".next", "target")
-                    : Set.of("node_modules", ".git", "dist", "build", ".next", "target");
+                    // 即使 includeNodeModules=true，也不打包缓存/内部元数据目录
+                    ? Set.of(".git", "dist", "build", ".next", "target", ".npm-cache", ".funai")
+                    : Set.of("node_modules", ".git", "dist", "build", ".next", "target", ".npm-cache", ".funai");
 
             StreamingResponseBody body = outputStream -> {
                 fun.ai.studio.workspace.ZipUtils.zipDirectory(hostAppDir, outputStream, excludes);

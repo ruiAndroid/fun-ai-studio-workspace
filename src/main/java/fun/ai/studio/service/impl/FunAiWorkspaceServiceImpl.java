@@ -1451,6 +1451,9 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
         s.add("build");
         s.add(".next");
         s.add("target");
+        // 缓存/内部元数据：前端文件树无需展示，也避免同步到前端造成噪音与性能浪费
+        s.add(".npm-cache");
+        s.add(".funai");
         return s;
     }
 
