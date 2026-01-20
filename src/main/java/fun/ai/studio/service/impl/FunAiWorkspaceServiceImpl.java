@@ -1848,6 +1848,7 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
 
         Path hostUserDir = resolveHostWorkspaceDir(userId);
         Path hostAppsDir = hostUserDir.resolve("apps");
+        // 应用目录结构：{hostRoot}/{userId}/apps/{appId}
         Path hostAppDir = hostAppsDir.resolve(String.valueOf(appId));
         Path hostRunDir = hostUserDir.resolve("run");
         Path metaPath = hostRunDir.resolve("current.json");
@@ -1895,19 +1896,23 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
             return;
         }
 
-        String mid = "-" + appId + "-";
+        String appStr = String.valueOf(appId);
+        String mid = "-" + appStr + "-";
+        int deleted = 0;
+        int matched = 0;
         RuntimeException last = null;
         try (var stream = Files.list(hostRunDir)) {
             for (Path p : stream.toList()) {
                 if (p == null) continue;
                 String name = p.getFileName() == null ? "" : p.getFileName().toString();
                 if (name.isEmpty()) continue;
-                // 仅清理 run-* 日志（避免误删 dev.pid/current.json 等控制文件）
+                // 仅清理 run-*-{appId}-*.log（避免 appId 子串误删）
                 if (!name.startsWith("run-")) continue;
                 if (!name.endsWith(".log")) continue;
                 if (!name.contains(mid)) continue;
+                matched++;
                 try {
-                    Files.deleteIfExists(p);
+                    if (Files.deleteIfExists(p)) deleted++;
                 } catch (Exception e) {
                     last = new RuntimeException("delete run log failed: " + p + ", err=" + e.getMessage(), e);
                 }
@@ -1918,6 +1923,10 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
         if (last != null) {
             log.warn("cleanup run logs failed: userId={}, appId={}, err={}", userId, appId, last.getMessage());
             throw last;
+        }
+        if (matched > 0) {
+            log.info("cleanup run logs done: userId={}, appId={}, runDir={}, matched={}, deleted={}, pattern=run-*{}*.log",
+                    userId, appId, hostRunDir, matched, deleted, mid);
         }
     }
 
