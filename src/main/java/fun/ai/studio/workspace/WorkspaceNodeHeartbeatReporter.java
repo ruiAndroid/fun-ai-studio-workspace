@@ -33,7 +33,8 @@ public class WorkspaceNodeHeartbeatReporter {
         this.httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build();
     }
 
-    @Scheduled(fixedDelayString = "#{T(java.lang.Math).max(5000, @workspaceNodeRegistryClientProperties.intervalSeconds * 1000)}")
+    // SpEL 的 Math.max 需要两侧类型一致；否则会触发 EL1031E / EL1033E 导致应用启动失败
+    @Scheduled(fixedDelayString = "#{T(java.lang.Math).max(5000L, @workspaceNodeRegistryClientProperties.intervalSeconds * 1000L)}")
     public void report() {
         if (props == null || !props.isEnabled()) return;
         if (!StringUtils.hasText(props.getApiBaseUrl())
