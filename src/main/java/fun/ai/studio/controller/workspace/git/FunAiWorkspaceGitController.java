@@ -1,8 +1,12 @@
 package fun.ai.studio.controller.workspace.git;
 
 import fun.ai.studio.common.Result;
+import fun.ai.studio.entity.request.WorkspaceGitCommitPushRequest;
 import fun.ai.studio.entity.response.WorkspaceGitEnsureResponse;
 import fun.ai.studio.entity.response.WorkspaceGitStatusResponse;
+import fun.ai.studio.entity.response.WorkspaceGitLogResponse;
+import fun.ai.studio.entity.response.WorkspaceGitCommitPushResponse;
+import fun.ai.studio.entity.response.WorkspaceGitRevertResponse;
 import fun.ai.studio.workspace.git.WorkspaceGitService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -67,6 +71,76 @@ public class FunAiWorkspaceGitController {
         } catch (Exception e) {
             log.error("git ensure failed: userId={}, appId={}, error={}", userId, appId, e.getMessage(), e);
             return Result.error("git ensure failed: " + e.getMessage());
+        }
+    }
+
+    @GetMapping("/log")
+    @Operation(summary = "查看提交历史", description = "返回最近 N 次提交记录（默认 10 条，最多 50 条）")
+    public Result<WorkspaceGitLogResponse> log(
+            @Parameter(description = "用户ID", required = true) @RequestParam Long userId,
+            @Parameter(description = "应用ID", required = true) @RequestParam Long appId,
+            @Parameter(description = "返回条数（默认 10，最多 50）") @RequestParam(defaultValue = "10") Integer limit
+    ) {
+        if (!gitService.isEnabled()) {
+            return Result.error("workspace git 功能未启用");
+        }
+        if (userId == null || appId == null) {
+            return Result.error("userId/appId 不能为空");
+        }
+        try {
+            WorkspaceGitLogResponse resp = gitService.log(userId, appId, limit == null ? 10 : limit);
+            return Result.success(resp);
+        } catch (Exception e) {
+            log.error("git log failed: userId={}, appId={}, error={}", userId, appId, e.getMessage(), e);
+            return Result.error("git log failed: " + e.getMessage());
+        }
+    }
+
+    @PostMapping("/commit-push")
+    @Operation(summary = "一键提交并推送", description = "将所有改动 commit 并 push 到远端（使用 workspace-bot 身份）")
+    public Result<WorkspaceGitCommitPushResponse> commitPush(
+            @Parameter(description = "用户ID", required = true) @RequestParam Long userId,
+            @Parameter(description = "应用ID", required = true) @RequestParam Long appId,
+            @RequestBody(required = false) WorkspaceGitCommitPushRequest request
+    ) {
+        if (!gitService.isEnabled()) {
+            return Result.error("workspace git 功能未启用");
+        }
+        if (userId == null || appId == null) {
+            return Result.error("userId/appId 不能为空");
+        }
+        try {
+            String message = (request == null) ? null : request.getMessage();
+            WorkspaceGitCommitPushResponse resp = gitService.commitPush(userId, appId, message);
+            return Result.success(resp);
+        } catch (Exception e) {
+            log.error("git commit-push failed: userId={}, appId={}, error={}", userId, appId, e.getMessage(), e);
+            return Result.error("git commit-push failed: " + e.getMessage());
+        }
+    }
+
+    @PostMapping("/revert")
+    @Operation(summary = "回退到某次提交", description = "使用 git revert 生成一个新的 commit 来撤销指定提交的改动（不改写历史），并自动 push")
+    public Result<WorkspaceGitRevertResponse> revert(
+            @Parameter(description = "用户ID", required = true) @RequestParam Long userId,
+            @Parameter(description = "应用ID", required = true) @RequestParam Long appId,
+            @Parameter(description = "要撤销的 commit SHA", required = true) @RequestParam String commitSha
+    ) {
+        if (!gitService.isEnabled()) {
+            return Result.error("workspace git 功能未启用");
+        }
+        if (userId == null || appId == null) {
+            return Result.error("userId/appId 不能为空");
+        }
+        if (commitSha == null || commitSha.isBlank()) {
+            return Result.error("commitSha 不能为空");
+        }
+        try {
+            WorkspaceGitRevertResponse resp = gitService.revert(userId, appId, commitSha);
+            return Result.success(resp);
+        } catch (Exception e) {
+            log.error("git revert failed: userId={}, appId={}, commitSha={}, error={}", userId, appId, commitSha, e.getMessage(), e);
+            return Result.error("git revert failed: " + e.getMessage());
         }
     }
 }
