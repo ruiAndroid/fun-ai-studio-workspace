@@ -212,30 +212,40 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
         try {
             ensureDir(hostAppDir);
 
-            // overwrite=true：严格清空旧内容；任何删除失败都视为失败（避免“返回成功但内容没换干净”）
+            // overwrite=true：清空旧内容，但保留 .git 目录（避免破坏 git 状态）
             if (overwrite) {
                 try (var stream = Files.list(hostAppDir)) {
                     for (Path p : (Iterable<Path>) stream::iterator) {
+                        String fileName = p.getFileName().toString();
+                        // 保留 .git 目录，不删除
+                        if (".git".equals(fileName)) {
+                            continue;
+                        }
                         ZipUtils.deleteDirectoryRecursively(p);
                     }
                 }
             } else {
-                // overwrite=false：若目录非空则拒绝（避免合并覆盖导致不可预期）
+                // overwrite=false：若目录非空则拒绝（.git 除外）
                 try (var stream = Files.list(hostAppDir)) {
-                    if (stream.findAny().isPresent()) {
+                    boolean hasNonGit = stream.anyMatch(p -> !".git".equals(p.getFileName().toString()));
+                    if (hasNonGit) {
                         throw new IllegalArgumentException("应用目录已存在且非空，overwrite=false 时不允许覆盖");
                     }
                 }
             }
 
-            // 解压必须同步完成后才返回；中途失败则回滚清理（删除残留内容）
+            // 解压必须同步完成后才返回；中途失败则回滚清理（删除残留内容，但保留 .git）
             try (InputStream in = file.getInputStream()) {
                 ZipUtils.unzipSafely(in, hostAppDir);
             } catch (Exception unzipErr) {
                 try {
-                    // best-effort：清理解压残留
+                    // best-effort：清理解压残留，但保留 .git
                     try (var stream = Files.list(hostAppDir)) {
                         for (Path p : (Iterable<Path>) stream::iterator) {
+                            String fileName = p.getFileName().toString();
+                            if (".git".equals(fileName)) {
+                                continue;
+                            }
                             ZipUtils.deleteDirectoryRecursively(p);
                         }
                     }
