@@ -235,8 +235,9 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
             }
 
             // 解压必须同步完成后才返回；中途失败则回滚清理（删除残留内容，但保留 .git）
+            // 解压时排除 .git 目录（避免 zip 包里的 .git 覆盖已有的）
             try (InputStream in = file.getInputStream()) {
-                ZipUtils.unzipSafely(in, hostAppDir);
+                ZipUtils.unzipSafely(in, hostAppDir, java.util.Set.of(".git"));
             } catch (Exception unzipErr) {
                 try {
                     // best-effort：清理解压残留，但保留 .git

@@ -37,18 +37,32 @@ public final class ZipUtils {
     }
 
     public static void unzipSafely(InputStream zipStream, Path destDir) throws IOException {
+        unzipSafely(zipStream, destDir, Set.of());
+    }
+
+    /**
+     * 安全解压 zip（防 Zip Slip），支持排除特定目录/文件
+     * @param excludeNames 排除的目录/文件名（路径中任一 segment 命中则跳过，如 ".git"）
+     */
+    public static void unzipSafely(InputStream zipStream, Path destDir, Set<String> excludeNames) throws IOException {
         if (zipStream == null) {
             throw new IllegalArgumentException("zipStream 不能为空");
         }
         if (destDir == null) {
             throw new IllegalArgumentException("destDir 不能为空");
         }
+        Set<String> excludes = (excludeNames == null) ? Set.of() : excludeNames;
         Files.createDirectories(destDir);
         try (ZipInputStream zis = new ZipInputStream(zipStream)) {
             ZipEntry entry;
             while ((entry = zis.getNextEntry()) != null) {
                 String name = entry.getName();
                 if (name == null || name.isBlank()) {
+                    continue;
+                }
+                // 跳过排除的目录/文件（如 .git）
+                if (shouldExcludeEntry(name, excludes)) {
+                    zis.closeEntry();
                     continue;
                 }
                 Path newPath = destDir.resolve(name).normalize();
@@ -67,6 +81,18 @@ public final class ZipUtils {
                 zis.closeEntry();
             }
         }
+    }
+
+    private static boolean shouldExcludeEntry(String entryName, Set<String> excludes) {
+        if (entryName == null || excludes == null || excludes.isEmpty()) return false;
+        // 将路径按 / 分割，检查每个 segment
+        String[] parts = entryName.split("/");
+        for (String part : parts) {
+            if (part != null && !part.isEmpty() && excludes.contains(part)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
