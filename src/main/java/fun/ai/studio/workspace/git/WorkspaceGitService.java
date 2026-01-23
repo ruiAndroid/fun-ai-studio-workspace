@@ -5,6 +5,7 @@ import fun.ai.studio.entity.response.WorkspaceGitStatusResponse;
 import fun.ai.studio.entity.response.WorkspaceGitLogResponse;
 import fun.ai.studio.entity.response.WorkspaceGitCommitPushResponse;
 import fun.ai.studio.entity.response.WorkspaceGitRevertResponse;
+import fun.ai.studio.entity.response.WorkspaceGitRestoreResponse;
 import fun.ai.studio.workspace.CommandResult;
 import fun.ai.studio.workspace.CommandRunner;
 import fun.ai.studio.workspace.WorkspaceProperties;
@@ -343,6 +344,95 @@ public class WorkspaceGitService {
     }
 
     private void fillBranchAndCommitForCommitPush(WorkspaceGitCommitPushResponse resp, Path appDir) {
+        CommandResult branchRes = runGit(appDir, "rev-parse", "--abbrev-ref", "HEAD");
+        if (branchRes.getExitCode() == 0) {
+            resp.setBranch(branchRes.getOutput().trim());
+        }
+        CommandResult commitRes = runGit(appDir, "rev-parse", "--short", "HEAD");
+        if (commitRes.getExitCode() == 0) {
+            resp.setCommitShort(commitRes.getOutput().trim());
+        }
+    }
+
+    /**
+     * 恢复到某个 commit 的状态（直接覆盖当前文件，不会有冲突）
+     * 实现：git checkout <commitSha> -- . + git add -A + git commit + git push
+     */
+    public WorkspaceGitRestoreResponse restore(Long userId, Long appId, String commitSha) {
+        WorkspaceGitRestoreResponse resp = new WorkspaceGitRestoreResponse();
+        Path appDir = resolveAppDir(userId, appId);
+        if (appDir == null || !Files.isDirectory(appDir) || !Files.isDirectory(appDir.resolve(".git"))) {
+            resp.setResult("FAILED");
+            resp.setMessage("非 Git 仓库");
+            return resp;
+        }
+        if (commitSha == null || commitSha.isBlank()) {
+            resp.setResult("FAILED");
+            resp.setMessage("commitSha 不能为空");
+            return resp;
+        }
+
+        String targetShort = commitSha.length() > 7 ? commitSha.substring(0, 7) : commitSha;
+        resp.setTargetCommit(targetShort);
+
+        // 配置 user.name / user.email
+        runGit(appDir, "config", "user.name", "workspace-bot");
+        runGit(appDir, "config", "user.email", "workspace-bot@funai.local");
+
+        // git checkout <commitSha> -- . （把所有文件恢复到目标 commit 的状态）
+        CommandResult checkoutRes = runGit(appDir, "checkout", commitSha.trim(), "--", ".");
+        if (checkoutRes.getExitCode() != 0) {
+            resp.setResult("FAILED");
+            resp.setMessage("checkout 失败: " + checkoutRes.getOutput());
+            fillBranchAndCommitForRestore(resp, appDir);
+            return resp;
+        }
+
+        // git add -A
+        CommandResult addRes = runGit(appDir, "add", "-A");
+        if (addRes.getExitCode() != 0) {
+            resp.setResult("FAILED");
+            resp.setMessage("git add 失败: " + addRes.getOutput());
+            fillBranchAndCommitForRestore(resp, appDir);
+            return resp;
+        }
+
+        // 检查是否有改动需要提交
+        CommandResult statusRes = runGit(appDir, "status", "--porcelain");
+        if (statusRes.getExitCode() == 0 && statusRes.getOutput().trim().isEmpty()) {
+            // 没有改动，说明当前已经是目标状态
+            resp.setResult("SUCCESS");
+            resp.setMessage("已经是目标版本，无需恢复");
+            fillBranchAndCommitForRestore(resp, appDir);
+            return resp;
+        }
+
+        // git commit
+        String msg = "Restore to " + targetShort + " (userId=" + userId + ", appId=" + appId + ")";
+        CommandResult commitRes = runGit(appDir, "commit", "-m", msg);
+        if (commitRes.getExitCode() != 0) {
+            resp.setResult("FAILED");
+            resp.setMessage("git commit 失败: " + commitRes.getOutput());
+            fillBranchAndCommitForRestore(resp, appDir);
+            return resp;
+        }
+
+        // git push
+        CommandResult pushRes = runGit(appDir, "push", "origin", "HEAD");
+        if (pushRes.getExitCode() != 0) {
+            resp.setResult("PUSH_FAILED");
+            resp.setMessage("恢复成功但 push 失败: " + pushRes.getOutput());
+            fillBranchAndCommitForRestore(resp, appDir);
+            return resp;
+        }
+
+        resp.setResult("SUCCESS");
+        resp.setMessage("恢复到 " + targetShort + " 成功");
+        fillBranchAndCommitForRestore(resp, appDir);
+        return resp;
+    }
+
+    private void fillBranchAndCommitForRestore(WorkspaceGitRestoreResponse resp, Path appDir) {
         CommandResult branchRes = runGit(appDir, "rev-parse", "--abbrev-ref", "HEAD");
         if (branchRes.getExitCode() == 0) {
             resp.setBranch(branchRes.getOutput().trim());
