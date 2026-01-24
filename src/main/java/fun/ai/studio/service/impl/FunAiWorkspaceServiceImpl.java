@@ -212,39 +212,40 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
         try {
             ensureDir(hostAppDir);
 
-            // overwrite=true：清空旧内容，但保留 .git 目录（避免破坏 git 状态）
+            // overwrite=true：清空旧内容，但保留 .git / Dockerfile 等关键文件（避免破坏 git 状态/部署构建标准）
+            final Set<String> protectedNames = Set.of(".git", "Dockerfile", "Containerfile", ".dockerignore", ".gitignore");
             if (overwrite) {
                 try (var stream = Files.list(hostAppDir)) {
                     for (Path p : (Iterable<Path>) stream::iterator) {
                         String fileName = p.getFileName().toString();
-                        // 保留 .git 目录，不删除
-                        if (".git".equals(fileName)) {
+                        // 保留关键文件/目录，不删除
+                        if (protectedNames.contains(fileName)) {
                             continue;
                         }
                         ZipUtils.deleteDirectoryRecursively(p);
                     }
                 }
             } else {
-                // overwrite=false：若目录非空则拒绝（.git 除外）
+                // overwrite=false：若目录非空则拒绝（.git / Dockerfile 等关键文件除外）
                 try (var stream = Files.list(hostAppDir)) {
-                    boolean hasNonGit = stream.anyMatch(p -> !".git".equals(p.getFileName().toString()));
-                    if (hasNonGit) {
+                    boolean hasNonProtected = stream.anyMatch(p -> !protectedNames.contains(p.getFileName().toString()));
+                    if (hasNonProtected) {
                         throw new IllegalArgumentException("应用目录已存在且非空，overwrite=false 时不允许覆盖");
                     }
                 }
             }
 
-            // 解压必须同步完成后才返回；中途失败则回滚清理（删除残留内容，但保留 .git）
-            // 解压时排除 .git 目录（避免 zip 包里的 .git 覆盖已有的）
+            // 解压必须同步完成后才返回；中途失败则回滚清理（删除残留内容，但保留 protectedNames）
+            // 解压时排除 protectedNames（避免 zip 包覆盖 .git/Dockerfile 等）
             try (InputStream in = file.getInputStream()) {
-                ZipUtils.unzipSafely(in, hostAppDir, java.util.Set.of(".git"));
+                ZipUtils.unzipSafely(in, hostAppDir, protectedNames);
             } catch (Exception unzipErr) {
                 try {
-                    // best-effort：清理解压残留，但保留 .git
+                    // best-effort：清理解压残留，但保留 protectedNames
                     try (var stream = Files.list(hostAppDir)) {
                         for (Path p : (Iterable<Path>) stream::iterator) {
                             String fileName = p.getFileName().toString();
-                            if (".git".equals(fileName)) {
+                            if (protectedNames.contains(fileName)) {
                                 continue;
                             }
                             ZipUtils.deleteDirectoryRecursively(p);
