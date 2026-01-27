@@ -5,7 +5,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.io.BufferedReader;
+import java.io.OutputStreamWriter;
 import java.io.InputStreamReader;
+import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -20,6 +22,13 @@ public class CommandRunner {
     private static final Logger log = LoggerFactory.getLogger(CommandRunner.class);
 
     public CommandResult run(Duration timeout, List<String> command) {
+        return run(timeout, command, null);
+    }
+
+    /**
+     * Run a command with optional stdin input (UTF-8).
+     */
+    public CommandResult run(Duration timeout, List<String> command, String stdin) {
         if (command == null || command.isEmpty()) {
             throw new IllegalArgumentException("command 不能为空");
         }
@@ -27,6 +36,17 @@ public class CommandRunner {
             ProcessBuilder pb = new ProcessBuilder(command);
             pb.redirectErrorStream(true);
             Process p = pb.start();
+
+            if (stdin != null) {
+                try (Writer w = new OutputStreamWriter(p.getOutputStream(), StandardCharsets.UTF_8)) {
+                    w.write(stdin);
+                    if (!stdin.endsWith("\n")) {
+                        w.write("\n");
+                    }
+                    w.flush();
+                } catch (Exception ignore) {
+                }
+            }
 
             StringBuilder out = new StringBuilder();
             try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
@@ -55,7 +75,7 @@ public class CommandRunner {
         for (String a : args) {
             cmd.add(a);
         }
-        return run(timeout, cmd);
+        return run(timeout, cmd, null);
     }
 }
 

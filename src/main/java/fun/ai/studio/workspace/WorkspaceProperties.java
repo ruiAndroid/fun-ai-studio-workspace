@@ -26,6 +26,18 @@ public class WorkspaceProperties {
     private String image;
 
     /**
+     * 可选：registry 登录用户名（建议用 robot 账号）。
+     * 若不配置，可通过环境变量 REGISTRY_USERNAME/REGISTRY_PASSWORD 注入。
+     */
+    private String registryUsername;
+
+    /**
+     * 可选：registry 登录密码/Token（建议用 robot token）。
+     * 若不配置，可通过环境变量 REGISTRY_USERNAME/REGISTRY_PASSWORD 注入。
+     */
+    private String registryPassword;
+
+    /**
      * 容器内 dev server 端口（Vite 默认 5173）
      */
     private int containerPort = 5173;
@@ -188,6 +200,22 @@ public class WorkspaceProperties {
 
     public void setImage(String image) {
         this.image = image;
+    }
+
+    public String getRegistryUsername() {
+        return registryUsername;
+    }
+
+    public void setRegistryUsername(String registryUsername) {
+        this.registryUsername = registryUsername;
+    }
+
+    public String getRegistryPassword() {
+        return registryPassword;
+    }
+
+    public void setRegistryPassword(String registryPassword) {
+        this.registryPassword = registryPassword;
     }
 
     public int getContainerPort() {

@@ -2189,6 +2189,8 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
     private void ensureContainerRunning(Long userId, Path hostUserDir, WorkspaceMeta meta) {
         String name = meta.getContainerName();
         String networkName = props.getNetworkName();
+        // Ensure we can pull private registry images (Harbor/ACR) before any container (re)create.
+        ensureRegistryLogin(meta.getImage());
 
         String status = queryContainerStatus(name);
         // 镜像升级：若容器当前镜像与 meta 期望镜像不一致，则重建容器（确保新镜像能力生效，例如 mongosh）
@@ -2354,6 +2356,68 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
         if (!r.isSuccess()) {
             throw new RuntimeException("创建 workspace 容器失败: userId=" + userId + ", out=" + r.getOutput());
         }
+    }
+
+    /**
+     * Best-effort login to registry (Harbor) if credentials are provided.
+     * - Prefer funai.workspace.registryUsername/registryPassword
+     * - Fallback env: REGISTRY_USERNAME/REGISTRY_PASSWORD
+     * - Legacy fallback env: ACR_USERNAME/ACR_PASSWORD
+     */
+    private void ensureRegistryLogin(String image) {
+        try {
+            String registry = extractRegistryHost(image);
+            if (!StringUtils.hasText(registry)) return;
+
+            String user = firstNonBlank(
+                    props.getRegistryUsername(),
+                    System.getenv("REGISTRY_USERNAME"),
+                    System.getenv("ACR_USERNAME")
+            );
+            String pwd = firstNonBlank(
+                    props.getRegistryPassword(),
+                    System.getenv("REGISTRY_PASSWORD"),
+                    System.getenv("ACR_PASSWORD")
+            );
+            if (!StringUtils.hasText(user) || !StringUtils.hasText(pwd)) return;
+
+            List<String> cmd = List.of("docker", "login", registry, "-u", user, "--password-stdin");
+            CommandResult r = commandRunner.run(Duration.ofSeconds(30), cmd, pwd);
+            if (!r.isSuccess()) {
+                log.warn("docker login failed: registry={}, user={}, out={}", registry, user, r.getOutput());
+            }
+        } catch (Exception e) {
+            // best-effort
+            log.debug("ensureRegistryLogin ignored: err={}", e.getMessage());
+        }
+    }
+
+    private static String firstNonBlank(String... vals) {
+        if (vals == null) return null;
+        for (String v : vals) {
+            if (v != null && !v.trim().isEmpty()) return v.trim();
+        }
+        return null;
+    }
+
+    /**
+     * Extract registry host from image string.
+     * For example:
+     *  - 172.21.138.103/funaistudio/img:tag -> 172.21.138.103
+     *  - docker.io/library/nginx:latest -> docker.io
+     *  - nginx:latest -> null
+     */
+    private static String extractRegistryHost(String image) {
+        if (image == null) return null;
+        String s = image.trim();
+        int slash = s.indexOf('/');
+        if (slash <= 0) return null; // no registry host
+        String host = s.substring(0, slash);
+        // Heuristic: registry host usually contains '.' or ':' or is 'localhost'
+        if (host.contains(".") || host.contains(":") || "localhost".equalsIgnoreCase(host)) {
+            return host;
+        }
+        return null;
     }
 
     private boolean isContainerNameAlreadyInUse(String output, String containerName) {
