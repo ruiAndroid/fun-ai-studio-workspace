@@ -50,7 +50,12 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
     private final CommandRunner commandRunner;
     private final ObjectMapper objectMapper;
 
-    private static final Duration CMD_TIMEOUT = Duration.ofSeconds(10);
+    /**
+     * Workspace 会调用 docker/podman 执行 stop/rm 等操作。
+     * 在 podman-docker 场景下，`docker rm -f` 默认会等待 10s（SIGTERM -> SIGKILL），
+     * 如果这里也用 10s 超时，很容易“刚好超时”导致命令被强杀、容器残留，进而触发 name already in use / conmon 异常链路。
+     */
+    private static final Duration CMD_TIMEOUT = Duration.ofSeconds(30);
     private static final long MAX_TEXT_FILE_BYTES = 1024L * 1024L * 2L; // 2MB
 
     public FunAiWorkspaceServiceImpl(WorkspaceProperties props,
@@ -1853,11 +1858,8 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
         } catch (Exception ignore) {
         }
 
-        // 2) 删除容器（强制）
-        try {
-            docker("rm", "-f", containerName);
-        } catch (Exception ignore) {
-        }
+        // 2) 删除容器（强制，含 podman conmon 异常兜底）
+        tryRemoveContainer(containerName);
 
         // 3) 刷新 last-known：容器状态应为 NOT_CREATED
         FunAiWorkspaceStatusResponse resp = new FunAiWorkspaceStatusResponse();
@@ -1917,6 +1919,17 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
         // 3) 删除 workspace app 目录（宿主机持久化）
         // node_modules 可能很大，且若仍有进程写入会导致 DirectoryNotEmpty。这里做“重试 + 失败隔离”，避免残留占用与后续误判。
         deleteDirBestEffort(hostAppDir, userId, appId);
+
+        // 4) 若用户级容器处于“坏状态”（典型：podman conmon died -> ExitCode=-1），则 best-effort 删除容器，
+        // 避免后续 ensure/start 因同名残留而反复失败；下次访问会自动重建。
+        try {
+            String containerName = containerNameFromMetaOrDefault(hostUserDir, userId);
+            if (isContainerBroken(containerName)) {
+                log.warn("workspace container looks broken, remove best-effort: userId={}, name={}", userId, containerName);
+                tryRemoveContainer(containerName);
+            }
+        } catch (Exception ignore) {
+        }
     }
 
     private void cleanupRunLogsForApp(Path hostRunDir, Long userId, Long appId) {
@@ -2432,14 +2445,56 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
 
     private void tryRemoveContainer(String containerName) {
         if (!StringUtils.hasText(containerName)) return;
-        try {
-            CommandResult rm = docker("rm", "-f", containerName);
-            if (!rm.isSuccess()) {
-                // rm 失败通常不致命（比如本来就不存在），仅记录 debug，避免误报
-                log.debug("docker rm ignored: container={}, out={}", containerName, rm.getOutput());
-            }
-        } catch (Exception ignore) {
+        CommandResult rm = docker("rm", "-f", containerName);
+        if (rm.isSuccess()) return;
+
+        String out = rm.getOutput() == null ? "" : rm.getOutput();
+        // 典型 podman-docker 异常：conmon died / internal libpod error；此时 docker rm 可能删不掉，需要 podman cleanup + rm
+        if (looksLikePodmanConmonError(out)) {
+            CommandResult cleanup = podman("container", "cleanup", containerName);
+            CommandResult prm = podman("rm", "-f", "--time", "0", containerName);
+            if (prm.isSuccess()) return;
+            log.warn("podman rm failed after cleanup: container={}, cleanupOut={}, rmOut={}",
+                    containerName, cleanup.getOutput(), prm.getOutput());
+            return;
         }
+
+        // rm 失败通常不致命（比如本来就不存在），但这里至少留一条 debug 便于排查。
+        log.debug("docker rm ignored: container={}, out={}", containerName, out);
+    }
+
+    private boolean isContainerBroken(String containerName) {
+        if (!StringUtils.hasText(containerName)) return false;
+        CommandResult r = docker("inspect", "-f", "{{.State.ExitCode}}::{{.State.Error}}", containerName);
+        if (!r.isSuccess()) return false;
+        String s = normalizeDockerCliOutput(r.getOutput());
+        if (!StringUtils.hasText(s) || !s.contains("::")) return false;
+        String[] parts = s.split("::", 2);
+        String codeStr = parts[0] == null ? "" : parts[0].trim();
+        String err = parts[1] == null ? "" : parts[1].trim();
+        if ("-1".equals(codeStr)) return true;
+        if (!err.isEmpty()) {
+            String e = err.toLowerCase(Locale.ROOT);
+            return e.contains("conmon") || e.contains("libpod") || e.contains("exit file");
+        }
+        return false;
+    }
+
+    private boolean looksLikePodmanConmonError(String output) {
+        if (output == null) return false;
+        String o = output.toLowerCase(Locale.ROOT);
+        return o.contains("conmon")
+                || o.contains("libpod")
+                || o.contains("exit file")
+                || o.contains("emulate docker cli using podman");
+    }
+
+    private CommandResult podman(String... args) {
+        List<String> cmd = new ArrayList<>();
+        cmd.add("podman");
+        for (String a : args) cmd.add(a);
+        // best-effort: podman 可能不存在（真实 Docker 环境），此时返回非 0 并被上层忽略/记录
+        return commandRunner.run(CMD_TIMEOUT, cmd);
     }
 
     /**
