@@ -1305,7 +1305,7 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
     }
 
     @Override
-    public FunAiWorkspaceFileReadResponse writeFileContent(Long userId, Long appId, String path, String content, boolean createParents, Long expectedLastModifiedMs) {
+    public FunAiWorkspaceFileReadResponse writeFileContent(Long userId, Long appId, String path, String content, boolean createParents, Long expectedLastModifiedMs, boolean forceWrite) {
         assertEnabled();
         assertAppOwned(userId, appId);
         FunAiWorkspaceProjectDirResponse dir = ensureAppDirHostOnly(userId, appId);
@@ -1322,8 +1322,8 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
                 if (parent != null) ensureDir(parent);
             }
 
-            // optimistic lock
-            if (expectedLastModifiedMs != null) {
+            // optimistic lock（forceWrite=true 时跳过校验）
+            if (!forceWrite && expectedLastModifiedMs != null) {
                 if (Files.exists(file)) {
                     long current = Files.getLastModifiedTime(file).toMillis();
                     if (current != expectedLastModifiedMs) {
@@ -1343,7 +1343,7 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
             }
             Files.write(file, bytes, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
 
-            // 写接口默认返回“轻响应”（不读回 content，减少 IO/CPU 与 JSON 体积）
+            // 写接口默认返回"轻响应"（不读回 content，减少 IO/CPU 与 JSON 体积）
             FunAiWorkspaceFileReadResponse resp = new FunAiWorkspaceFileReadResponse();
             resp.setUserId(userId);
             resp.setAppId(appId);

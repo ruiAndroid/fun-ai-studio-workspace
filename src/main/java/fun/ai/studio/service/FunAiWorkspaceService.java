@@ -80,7 +80,7 @@ public interface FunAiWorkspaceService {
     /**
      * 在线编辑器：写入文件内容（UTF-8 文本，带乐观锁）
      */
-    FunAiWorkspaceFileReadResponse writeFileContent(Long userId, Long appId, String path, String content, boolean createParents, Long expectedLastModifiedMs);
+    FunAiWorkspaceFileReadResponse writeFileContent(Long userId, Long appId, String path, String content, boolean createParents, Long expectedLastModifiedMs, boolean forceWrite);
 
     /**
      * 在线编辑器：创建目录

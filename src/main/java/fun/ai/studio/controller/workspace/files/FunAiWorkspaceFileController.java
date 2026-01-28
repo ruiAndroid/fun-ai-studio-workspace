@@ -125,14 +125,15 @@ public class FunAiWorkspaceFileController {
     }
 
     @PostMapping("/content")
-    @Operation(summary = "写入文件内容", description = "写入 apps/{appId} 下指定文件（UTF-8 文本），支持 expectedLastModifiedMs 乐观锁")
+    @Operation(summary = "写入文件内容", description = "写入 apps/{appId} 下指定文件（UTF-8 文本），支持 expectedLastModifiedMs 乐观锁；forceWrite=true 时强制写入（跳过乐观锁校验）")
     public Result<FunAiWorkspaceFileReadResponse> write(@RequestBody FunAiWorkspaceFileWriteRequest req) {
         try {
             if (req == null) return Result.error("请求不能为空");
             activityTracker.touch(req.getUserId());
             boolean createParents = req.getCreateParents() == null || req.getCreateParents();
+            boolean forceWrite = req.getForceWrite() != null && req.getForceWrite();
             return Result.success(workspaceService.writeFileContent(
-                    req.getUserId(), req.getAppId(), req.getPath(), req.getContent(), createParents, req.getExpectedLastModifiedMs()
+                    req.getUserId(), req.getAppId(), req.getPath(), req.getContent(), createParents, req.getExpectedLastModifiedMs(), forceWrite
             ));
         } catch (IllegalArgumentException | IllegalStateException e) {
             return Result.error(e.getMessage());

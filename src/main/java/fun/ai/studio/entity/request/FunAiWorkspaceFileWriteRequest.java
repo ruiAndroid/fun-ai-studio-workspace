@@ -18,6 +18,13 @@ public class FunAiWorkspaceFileWriteRequest {
      * 是否自动创建父目录（默认 true）
      */
     private Boolean createParents;
+
+    /**
+     * 强制写入（默认 false）。
+     * <p>
+     * 当 forceWrite=true 时，将跳过 expectedLastModifiedMs 的乐观锁校验，直接写入（用于特殊场景的“覆盖保存”）。
+     */
+    private Boolean forceWrite;
     /**
      * 乐观锁：期望的 lastModifiedMs
      * - 若文件存在：必须与当前 lastModifiedMs 完全一致，否则拒绝写入（避免并发覆盖）
