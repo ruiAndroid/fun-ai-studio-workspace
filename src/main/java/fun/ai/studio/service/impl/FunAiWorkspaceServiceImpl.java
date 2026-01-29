@@ -1687,13 +1687,11 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
 
     /**
      * preview/部署的脚本选择策略：
-     * - start：全栈/后端常规入口
-     * - dev：兜底（至少能让用户看到页面/服务跑起来）
-     * - server：最后兜底（仅启动后端 API 的场景；很多项目不会在 / 返回页面）
+     * - dev：优先（开发模式，适配全栈 concurrently + vite 注入）
+     * - server：兜底（仅启动后端 API 的场景；很多项目不会在 / 返回页面）
      */
     private String pickPreviewScript(Path packageJson) {
-        // 标准化：/run/preview 直接按 start -> dev -> server 选择
-        if (hasNpmScript(packageJson, "start")) return "start";
+        // 标准化：/run/preview 直接按 dev -> server 选择（不依赖 start/preview）
         if (hasNpmScript(packageJson, "dev")) return "dev";
         // 全栈一体项目常用：scripts.server 启动后端（例如 tsx/express）。
         // 注意：很多后端项目不会对 "/" 提供页面，因此放到最后兜底，避免“预览 URL 打开 404”的错觉。
