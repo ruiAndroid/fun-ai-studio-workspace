@@ -560,10 +560,12 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
                     + "BASE_PATH=\"$BASE_PATH_ROOT\"\n"
                     + "export BASE_PATH=\"$BASE_PATH\"\n"
                     // 对全栈/后端入口（start/server）：尽量走“生产模式”，避免 HTML 引用 /@vite/client、/src/* 等开发期绝对路径
-                    // 同时尝试执行 build（若不存在 build 脚本则不报错），让后端可以提供构建后的静态资源（若项目支持）
                     + "if [ \"$RUN_SCRIPT\" = \"server\" ] || [ \"$RUN_SCRIPT\" = \"start\" ]; then\n"
                     + "  export NODE_ENV=production\n"
                     + "  echo \"[preview] NODE_ENV=$NODE_ENV\" >>\"$LOG_FILE\" 2>&1\n"
+                    + "fi\n"
+                    // 对 start/server/preview：尽量先 build（若不存在 build 脚本则不报错）
+                    + "if [ \"$RUN_SCRIPT\" = \"server\" ] || [ \"$RUN_SCRIPT\" = \"start\" ] || [ \"$RUN_SCRIPT\" = \"preview\" ]; then\n"
                     + "  echo \"[preview] npm run build --if-present\" >>\"$LOG_FILE\" 2>&1\n"
                     + "  npm run build --if-present >>\"$LOG_FILE\" 2>&1 || true\n"
                     + "fi\n"
@@ -630,16 +632,21 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
                     + "  # 如果脚本本身是 vite（而不是 concurrently/自定义 runner），才追加 --host/--port/--base 参数\n"
                     + "  echo \"$script_line\" | grep -qi \"\\bvite\\b\" && cmd=\"npm run $RUN_SCRIPT -- --host 0.0.0.0 --port $PORT --strictPort --base $BASE_PATH\" || true\n"
                     + "\n"
-                    + "  # 兼容全栈项目常见写法：dev=concurrently \"npm run client\" \"npm run server:dev\"\n"
+                    + "  # 兼容全栈项目常见写法：dev=concurrently \"npm run dev:client\" \"npm run dev:server\"\n"
+                    + "  # 或 dev=concurrently \"npm run client\" \"npm run server:dev\"\n"
                     + "  # 这类脚本里 vite 往往藏在 client 脚本里，直接跑 npm run dev 无法注入 --base，导致浏览器模块脚本请求拿到 text/html（白屏）。\n"
                     + "  if echo \"$script_line\" | grep -qi \"\\bconcurrently\\b\"; then\n"
-                    + "    client_line=$(node -p \"try{const s=require('./package.json').scripts||{}; s['client']||''}catch(e){''}\" 2>/dev/null || true)\n"
+                    + "    client_script=$(node -p \"try{const s=require('./package.json').scripts||{}; s['dev:client']? 'dev:client' : (s['client']? 'client' : '')}catch(e){''}\" 2>/dev/null || true)\n"
+                    + "    client_line=$(node -p \"try{const s=require('./package.json').scripts||{}; const k=(s['dev:client']? 'dev:client' : (s['client']? 'client' : '')); k? (s[k]||'') : ''}catch(e){''}\" 2>/dev/null || true)\n"
+                    + "    has_dev_server=$(node -p \"try{const s=require('./package.json').scripts||{}; s['dev:server']? '1':'0'}catch(e){'0'}\" 2>/dev/null || echo 0)\n"
                     + "    has_server_dev=$(node -p \"try{const s=require('./package.json').scripts||{}; s['server:dev']? '1':'0'}catch(e){'0'}\" 2>/dev/null || echo 0)\n"
                     + "    if echo \"$client_line\" | grep -qi \"\\bvite\\b\"; then\n"
-                    + "      if [ \"$has_server_dev\" = \"1\" ]; then\n"
+                    + "      if [ \"$has_dev_server\" = \"1\" ]; then\n"
+                    + "        cmd=\"sh -c 'npm run dev:client -- --host 0.0.0.0 --port $PORT --strictPort --base $BASE_PATH & npm run dev:server; wait'\"\n"
+                    + "      elif [ \"$has_server_dev\" = \"1\" ]; then\n"
                     + "        cmd=\"sh -c 'npm run client -- --host 0.0.0.0 --port $PORT --strictPort --base $BASE_PATH & npm run server:dev; wait'\"\n"
                     + "      else\n"
-                    + "        cmd=\"npm run client -- --host 0.0.0.0 --port $PORT --strictPort --base $BASE_PATH\"\n"
+                    + "        if [ -n \"$client_script\" ]; then cmd=\"npm run $client_script -- --host 0.0.0.0 --port $PORT --strictPort --base $BASE_PATH\"; fi\n"
                     + "      fi\n"
                     + "    fi\n"
                     + "  fi\n"
@@ -727,7 +734,31 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
                     + "inode=$(find_inode)\n"
                     + "if [ -n \"$inode\" ]; then kill_by_inode \"$inode\"; fi\n"
                     + "BASE='/'\n"
-                    + "setsid sh -c \"npm run dev -- --host 0.0.0.0 --port $PORT --strictPort --base $BASE\" >>\"$LOG_FILE\" 2>&1 < /dev/null &\n"
+                    + "cmd=\"npm run dev\"\n"
+                    + "script_line=$(node -p \"try{const s=require('./package.json').scripts||{}; s['dev']||''}catch(e){''}\" 2>/dev/null || true)\n"
+                    + "if [ -n \"$script_line\" ]; then echo \"[dev-start] scripts.dev=$script_line\" >>\"$LOG_FILE\" 2>&1; fi\n"
+                    + "echo \"$script_line\" | grep -qi \"\\bvite\\b\" && cmd=\"npm run dev -- --host 0.0.0.0 --port $PORT --strictPort --base $BASE\" || true\n"
+                    + "if [ \"$cmd\" = \"npm run dev\" ]; then\n"
+                    + "  # 兼容全栈项目：dev=concurrently \"npm run dev:client\" \"npm run dev:server\"\n"
+                    + "  # 不要把 --host/--port/--base 直接传给 concurrently，否则参数不会透传给 vite。\n"
+                    + "  if echo \"$script_line\" | grep -qi \"\\bconcurrently\\b\"; then\n"
+                    + "    client_script=$(node -p \"try{const s=require('./package.json').scripts||{}; s['dev:client']? 'dev:client' : (s['client']? 'client' : '')}catch(e){''}\" 2>/dev/null || true)\n"
+                    + "    client_line=$(node -p \"try{const s=require('./package.json').scripts||{}; const k=(s['dev:client']? 'dev:client' : (s['client']? 'client' : '')); k? (s[k]||'') : ''}catch(e){''}\" 2>/dev/null || true)\n"
+                    + "    has_dev_server=$(node -p \"try{const s=require('./package.json').scripts||{}; s['dev:server']? '1':'0'}catch(e){'0'}\" 2>/dev/null || echo 0)\n"
+                    + "    has_server_dev=$(node -p \"try{const s=require('./package.json').scripts||{}; s['server:dev']? '1':'0'}catch(e){'0'}\" 2>/dev/null || echo 0)\n"
+                    + "    if echo \"$client_line\" | grep -qi \"\\bvite\\b\"; then\n"
+                    + "      if [ \"$has_dev_server\" = \"1\" ]; then\n"
+                    + "        cmd=\"sh -c 'npm run dev:client -- --host 0.0.0.0 --port $PORT --strictPort --base $BASE & npm run dev:server; wait'\"\n"
+                    + "      elif [ \"$has_server_dev\" = \"1\" ]; then\n"
+                    + "        cmd=\"sh -c 'npm run client -- --host 0.0.0.0 --port $PORT --strictPort --base $BASE & npm run server:dev; wait'\"\n"
+                    + "      else\n"
+                    + "        if [ -n \"$client_script\" ]; then cmd=\"npm run $client_script -- --host 0.0.0.0 --port $PORT --strictPort --base $BASE\"; fi\n"
+                    + "      fi\n"
+                    + "    fi\n"
+                    + "  fi\n"
+                    + "fi\n"
+                    + "echo \"[dev-start] cmd=$cmd\" >>\"$LOG_FILE\" 2>&1\n"
+                    + "setsid sh -c \"$cmd\" >>\"$LOG_FILE\" 2>&1 < /dev/null &\n"
                     + "pid=$!\n"
                     + "echo \"$pid\" > \"$PID_FILE\"\n"
                     + "printf '{\"appId\":" + appId + ",\"type\":\"DEV\",\"pid\":%s,\"startedAt\":%s,\"logPath\":\"" + logFile + "\"}' \"$pid\" \"$(date +%s)\" > \"$META_FILE\"\n";
@@ -1656,14 +1687,15 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
 
     /**
      * preview/部署的脚本选择策略：
-     * - start：全栈/后端常规入口
      * - preview：纯前端常见（vite preview）
+     * - start：全栈/后端常规入口
      * - dev：兜底（至少能让用户看到页面/服务跑起来）
      * - server：最后兜底（仅启动后端 API 的场景；很多项目不会在 / 返回页面）
      */
     private String pickPreviewScript(Path packageJson) {
-        if (hasNpmScript(packageJson, "start")) return "start";
+        // 标准化：/run/preview 优先执行 scripts.preview
         if (hasNpmScript(packageJson, "preview")) return "preview";
+        if (hasNpmScript(packageJson, "start")) return "start";
         if (hasNpmScript(packageJson, "dev")) return "dev";
         // 全栈一体项目常用：scripts.server 启动后端（例如 tsx/express）。
         // 注意：很多后端项目不会对 "/" 提供页面，因此放到最后兜底，避免“预览 URL 打开 404”的错觉。
