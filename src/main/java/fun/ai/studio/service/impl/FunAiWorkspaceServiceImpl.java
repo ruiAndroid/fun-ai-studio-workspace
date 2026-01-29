@@ -564,8 +564,8 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
                     + "  export NODE_ENV=production\n"
                     + "  echo \"[preview] NODE_ENV=$NODE_ENV\" >>\"$LOG_FILE\" 2>&1\n"
                     + "fi\n"
-                    // 对 start/server/preview：尽量先 build（若不存在 build 脚本则不报错）
-                    + "if [ \"$RUN_SCRIPT\" = \"server\" ] || [ \"$RUN_SCRIPT\" = \"start\" ] || [ \"$RUN_SCRIPT\" = \"preview\" ]; then\n"
+                    // 对 start/server：尽量先 build（若不存在 build 脚本则不报错）
+                    + "if [ \"$RUN_SCRIPT\" = \"server\" ] || [ \"$RUN_SCRIPT\" = \"start\" ]; then\n"
                     + "  echo \"[preview] npm run build --if-present\" >>\"$LOG_FILE\" 2>&1\n"
                     + "  npm run build --if-present >>\"$LOG_FILE\" 2>&1 || true\n"
                     + "fi\n"
@@ -1687,14 +1687,12 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
 
     /**
      * preview/部署的脚本选择策略：
-     * - preview：纯前端常见（vite preview）
      * - start：全栈/后端常规入口
      * - dev：兜底（至少能让用户看到页面/服务跑起来）
      * - server：最后兜底（仅启动后端 API 的场景；很多项目不会在 / 返回页面）
      */
     private String pickPreviewScript(Path packageJson) {
-        // 标准化：/run/preview 优先执行 scripts.preview
-        if (hasNpmScript(packageJson, "preview")) return "preview";
+        // 标准化：/run/preview 直接按 start -> dev -> server 选择
         if (hasNpmScript(packageJson, "start")) return "start";
         if (hasNpmScript(packageJson, "dev")) return "dev";
         // 全栈一体项目常用：scripts.server 启动后端（例如 tsx/express）。

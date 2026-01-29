@@ -67,7 +67,7 @@ public class FunAiWorkspaceRunController {
     }
 
     @PostMapping("/preview")
-    @Operation(summary = "受控预览（非阻塞）", description = "在 workspace 容器内执行 npm run preview（优先；适合前端 vite preview），若不存在则回退到 npm run start/dev。会先 stopRun，保证平台对 5173 拥有最终控制权。")
+    @Operation(summary = "受控预览（非阻塞）", description = "在 workspace 容器内执行 npm run start（优先；适合全栈/后端），若不存在则回退到 npm run dev -> server。会先 stopRun，保证平台对 5173 拥有最终控制权。")
     public Result<FunAiWorkspaceRunStatusResponse> preview(
             @Parameter(description = "用户ID", required = true) @RequestParam Long userId,
             @Parameter(description = "应用ID", required = true) @RequestParam Long appId
