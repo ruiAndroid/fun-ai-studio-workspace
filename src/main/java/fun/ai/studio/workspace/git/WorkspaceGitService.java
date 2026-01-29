@@ -17,6 +17,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -231,6 +232,47 @@ public class WorkspaceGitService {
             resp.setResult("FAILED");
             resp.setMessage("非 Git 仓库");
             return resp;
+        }
+
+        // best-effort：避免首次提交把 node_modules 等大目录推上去
+        // - 不覆盖已有 .gitignore
+        // - 即使只生成了 .gitignore，本次 commitPush 也会把它提交上去（符合预期）
+        try {
+            Path gi = appDir.resolve(".gitignore");
+            if (!Files.exists(gi)) {
+                String content = """
+                        # Logs
+                        logs
+                        *.log
+                        npm-debug.log*
+                        yarn-debug.log*
+                        yarn-error.log*
+                        pnpm-debug.log*
+                        lerna-debug.log*
+                        
+                        node_modules
+                        dist
+                        dist-ssr
+                        *.local
+                        .npm-cache/
+                        # Editor directories and files
+                        .vscode/*
+                        !.vscode/extensions.json
+                        .idea
+                        .DS_Store
+                        *.suo
+                        *.ntvs*
+                        *.njsproj
+                        *.sln
+                        *.sw?
+                        
+                        # Database
+                        server/checkin.db
+                        
+                        """;
+                Files.writeString(gi, content, StandardCharsets.UTF_8);
+            }
+        } catch (Exception ignore) {
         }
 
         // 检查是否有改动
