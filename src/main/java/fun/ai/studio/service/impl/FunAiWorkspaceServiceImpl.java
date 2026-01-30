@@ -512,6 +512,11 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
                     + "  if [ -z \"$NPM_CONFIG_REGISTRY\" ] && [ -n \"$npm_config_registry\" ]; then npm config set registry \"$npm_config_registry\" >/dev/null 2>&1 || true; fi\n"
                     + "  reg=$(npm config get registry 2>/dev/null || true)\n"
                     + "  if [ -n \"$reg\" ]; then echo \"[install] npm registry: $reg\" >>\"$LOG_FILE\" 2>&1; fi\n"
+                    + "  # 自动生成 .npmrc（用于部署时加速）\n"
+                    + "  if [ ! -f .npmrc ] && [ -n \"$reg\" ]; then\n"
+                    + "    echo \"registry=$reg\" > .npmrc\n"
+                    + "    echo \"[install] created .npmrc with registry=$reg\" >>\"$LOG_FILE\" 2>&1\n"
+                    + "  fi\n"
                     + npmCacheSnippet
                     + "  echo \"[install] npm install (include dev)\" >>\"$LOG_FILE\" 2>&1\n"
                     + "  set +e\n"
