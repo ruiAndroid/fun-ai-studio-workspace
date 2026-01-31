@@ -1948,11 +1948,21 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
 
         // 3) 删除该 appId 对应的历史 run 日志（避免 run 目录无限累积）
         // 日志命名约定：run/run-{type}-{appId}-{timestamp}.log
-        cleanupRunLogsForApp(hostRunDir, userId, appId);
+        try {
+            cleanupRunLogsForApp(hostRunDir, userId, appId);
+        } catch (Exception e) {
+            // 清理 run 日志失败不阻断应用删除流程
+            log.warn("cleanup run logs failed (best-effort): userId={}, appId={}, err={}", userId, appId, e.getMessage());
+        }
 
         // 3) 删除 workspace app 目录（宿主机持久化）
         // node_modules 可能很大，且若仍有进程写入会导致 DirectoryNotEmpty。这里做“重试 + 失败隔离”，避免残留占用与后续误判。
-        deleteDirBestEffort(hostAppDir, userId, appId);
+        try {
+            deleteDirBestEffort(hostAppDir, userId, appId);
+        } catch (Exception e) {
+            // 清理应用目录失败不阻断应用删除流程
+            log.warn("cleanup workspace app dir failed (best-effort): userId={}, appId={}, dir={}, err={}", userId, appId, hostAppDir, e.getMessage());
+        }
 
         // 4) 若用户级容器处于“坏状态”（典型：podman conmon died -> ExitCode=-1），则 best-effort 删除容器，
         // 避免后续 ensure/start 因同名残留而反复失败；下次访问会自动重建。

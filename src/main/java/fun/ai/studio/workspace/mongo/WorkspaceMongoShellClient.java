@@ -188,6 +188,62 @@ public class WorkspaceMongoShellClient {
     }
 
     /**
+     * 列出所有数据库（用于定时清理任务）
+     * 直接从 87 服务器连接到 88 MongoDB 服务器
+     */
+    public List<String> listDatabases() {
+        assertMongoEnabled();
+        
+        WorkspaceProperties.MongoProperties mongoCfg = workspaceProperties.getMongo();
+        String host = mongoCfg.getHost();
+        int port = mongoCfg.getPort();
+        String username = mongoCfg.getUsername();
+        String password = mongoCfg.getPassword();
+        String authSource = mongoCfg.getAuthSource();
+        
+        // 构建连接字符串（连接到 admin 数据库以列出所有数据库）
+        String uri;
+        if (StringUtils.hasText(username) && StringUtils.hasText(password)) {
+            uri = String.format("mongodb://%s:%s@%s:%d/admin?authSource=%s",
+                    username, password, host, port, authSource);
+        } else {
+            uri = String.format("mongodb://%s:%d/admin", host, port);
+        }
+        
+        // 使用 mongosh 列出所有数据库
+        String script = "print(EJSON.stringify({databases:db.adminCommand({listDatabases:1}).databases.map(d=>d.name)},{relaxed:true}))";
+        List<String> cmd = List.of(
+                "mongosh", uri,
+                "--quiet",
+                "--eval", script
+        );
+        
+        try {
+            CommandResult r = commandRunner.run(Duration.ofSeconds(10), cmd);
+            if (!r.isSuccess()) {
+                throw new RuntimeException("列出数据库失败: exitCode=" + r.getExitCode() + ", output=" + r.getOutput());
+            }
+            
+            String out = lastNonEmptyLine(r.getOutput());
+            if (!StringUtils.hasText(out)) {
+                return List.of();
+            }
+            
+            Map<?, ?> result = objectMapper.readValue(out, Map.class);
+            Object databases = result.get("databases");
+            if (databases instanceof List<?> list) {
+                return list.stream()
+                        .filter(x -> x != null)
+                        .map(String::valueOf)
+                        .toList();
+            }
+            return List.of();
+        } catch (Exception e) {
+            throw new RuntimeException("列出数据库失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
      * 直接从 87 服务器连接到 88 MongoDB 服务器执行查询（不依赖用户容器）
      */
     private Map<?, ?> runMongoShellJson(String dbName, String script) {
