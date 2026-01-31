@@ -35,7 +35,7 @@ import java.util.Map;
 /**
  * Workspace Mongo Explorer（只读）
  * <p>
- * 设计目标：不暴露 27017，通过 docker exec 在容器内调用 mongosh 查询。
+ * 设计目标：直接从 87 服务器连接到 88 独立 MongoDB 服务器进行查询（不依赖用户容器）。
  */
 @RestController
 @RequestMapping("/api/fun-ai/workspace/mongo")
@@ -63,7 +63,7 @@ public class FunAiWorkspaceMongoController {
     }
 
     @GetMapping("/collections")
-    @Operation(summary = "列出集合（只读）", description = "在容器内使用 mongosh 列出 db_{appId} 的集合列表")
+    @Operation(summary = "列出集合（只读）", description = "直接从 87 服务器连接 88 MongoDB 服务器列出 db_{appId} 的集合列表")
     public Result<WorkspaceMongoCollectionsResponse> collections(
             @Parameter(description = "用户ID", required = true) @RequestParam Long userId,
             @Parameter(description = "应用ID", required = true) @RequestParam Long appId
@@ -94,7 +94,7 @@ public class FunAiWorkspaceMongoController {
     }
 
     @PostMapping("/find")
-    @Operation(summary = "查询文档列表（只读）", description = "在容器内使用 mongosh 执行 find（带 limit/skip/sort/projection）")
+    @Operation(summary = "查询文档列表（只读）", description = "直接从 87 服务器连接 88 MongoDB 服务器执行 find（带 limit/skip/sort/projection）")
     public Result<WorkspaceMongoFindResponse> find(
             @Parameter(description = "用户ID", required = true) @RequestParam Long userId,
             @Parameter(description = "应用ID", required = true) @RequestParam Long appId,
