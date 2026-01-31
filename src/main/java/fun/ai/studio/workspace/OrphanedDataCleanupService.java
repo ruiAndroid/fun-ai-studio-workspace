@@ -1,13 +1,9 @@
 package fun.ai.studio.workspace;
 
-import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
-import fun.ai.studio.entity.FunAiApp;
-import fun.ai.studio.mapper.FunAiAppMapper;
 import fun.ai.studio.workspace.mongo.WorkspaceMongoShellClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.scheduling.annotation.Scheduled;
-import org.springframework.stereotype.Component;
+import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 import java.io.IOException;
@@ -15,102 +11,87 @@ import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * 定时清理孤立数据（数据库中已删除的应用在磁盘和 MongoDB 中的残留数据）
- * - 每天凌晨 2 点执行
- * - 清理内容：
- *   1. 87 服务器上的应用目录（{hostRoot}/{userId}/apps/{appId}）
- *   2. 87 服务器上的 run 日志（{hostRoot}/{userId}/run/run-*-{appId}-*.log）
- *   3. 88 MongoDB 服务器上的开发态数据库（db_{appId}）
+ * 孤立数据清理服务（开发态）
+ * 
+ * 清理内容：
+ * 1. 87 服务器上的应用目录（{hostRoot}/{userId}/apps/{appId}）
+ * 2. 87 服务器上的 run 日志（{hostRoot}/{userId}/run/run-*-{appId}-*.log）
+ * 3. 88 MongoDB 服务器上的开发态数据库（db_{appId}）
  */
-@Component
-public class OrphanedDataCleaner {
-    private static final Logger log = LoggerFactory.getLogger(OrphanedDataCleaner.class);
+@Service
+public class OrphanedDataCleanupService {
+    private static final Logger log = LoggerFactory.getLogger(OrphanedDataCleanupService.class);
 
     private final WorkspaceProperties props;
-    private final FunAiAppMapper appMapper;
     private final WorkspaceMongoShellClient mongoClient;
 
     // run 日志文件名格式：run-{type}-{appId}-{timestamp}.log
     private static final Pattern RUN_LOG_PATTERN = Pattern.compile("^run-[^-]+-([0-9]+)-[0-9]+\\.log$");
 
-    public OrphanedDataCleaner(WorkspaceProperties props,
-                               FunAiAppMapper appMapper,
-                               WorkspaceMongoShellClient mongoClient) {
+    public OrphanedDataCleanupService(WorkspaceProperties props,
+                                      WorkspaceMongoShellClient mongoClient) {
         this.props = props;
-        this.appMapper = appMapper;
         this.mongoClient = mongoClient;
     }
 
     /**
-     * 每天凌晨 2 点执行清理任务
-     * cron 格式：秒 分 时 日 月 周
+     * 清理孤立数据
+     * 
+     * @param existingAppIds 数据库中存在的应用 ID 集合
+     * @return 清理结果统计
      */
-    @Scheduled(cron = "0 0 2 * * ?")
-    public void cleanOrphanedData() {
+    public CleanupResult cleanOrphanedData(Set<Long> existingAppIds) {
         if (props == null || !props.isEnabled()) {
-            log.debug("orphaned data cleaner skipped: workspace not enabled");
-            return;
+            log.warn("workspace 未启用，跳过清理");
+            return new CleanupResult(0, 0, 0, "workspace not enabled");
         }
         if (!StringUtils.hasText(props.getHostRoot())) {
-            log.warn("orphaned data cleaner skipped: hostRoot not configured");
-            return;
+            log.warn("hostRoot 未配置，跳过清理");
+            return new CleanupResult(0, 0, 0, "hostRoot not configured");
         }
 
-        log.info("=== 开始清理孤立数据 ===");
+        log.info("=== 开始清理开发态孤立数据 ===");
         long startTime = System.currentTimeMillis();
 
+        int cleanedAppDirs = 0;
+        int cleanedRunLogs = 0;
+        int cleanedDatabases = 0;
+
         try {
-            // 1. 从数据库查询所有存在的应用 ID
-            Set<Long> existingAppIds = loadExistingAppIds();
-            log.info("数据库中存在的应用数量: {}", existingAppIds.size());
+            // 1. 清理磁盘上的孤立数据
+            int[] diskResult = cleanOrphanedDiskData(existingAppIds);
+            cleanedAppDirs = diskResult[0];
+            cleanedRunLogs = diskResult[1];
 
-            // 2. 清理磁盘上的孤立数据
-            cleanOrphanedDiskData(existingAppIds);
-
-            // 3. 清理 MongoDB 中的孤立数据库
-            cleanOrphanedMongoDatabases(existingAppIds);
+            // 2. 清理 MongoDB 中的孤立数据库
+            cleanedDatabases = cleanOrphanedMongoDatabases(existingAppIds);
 
             long duration = System.currentTimeMillis() - startTime;
-            log.info("=== 孤立数据清理完成，耗时: {}ms ===", duration);
+            log.info("=== 开发态孤立数据清理完成，耗时: {}ms ===", duration);
+            
+            return new CleanupResult(cleanedAppDirs, cleanedRunLogs, cleanedDatabases, "success");
         } catch (Exception e) {
-            log.error("孤立数据清理失败", e);
-        }
-    }
-
-    /**
-     * 从数据库加载所有存在的应用 ID
-     */
-    private Set<Long> loadExistingAppIds() {
-        try {
-            List<FunAiApp> apps = appMapper.selectList(new QueryWrapper<>());
-            Set<Long> appIds = new HashSet<>();
-            for (FunAiApp app : apps) {
-                if (app.getId() != null) {
-                    appIds.add(app.getId());
-                }
-            }
-            return appIds;
-        } catch (Exception e) {
-            log.error("加载应用列表失败", e);
-            return new HashSet<>();
+            log.error("开发态孤立数据清理失败", e);
+            return new CleanupResult(cleanedAppDirs, cleanedRunLogs, cleanedDatabases, "error: " + e.getMessage());
         }
     }
 
     /**
      * 清理磁盘上的孤立数据（应用目录和 run 日志）
+     * 
+     * @return [cleanedAppDirs, cleanedRunLogs]
      */
-    private void cleanOrphanedDiskData(Set<Long> existingAppIds) {
+    private int[] cleanOrphanedDiskData(Set<Long> existingAppIds) {
         Path hostRoot = Paths.get(props.getHostRoot());
         if (!Files.exists(hostRoot) || !Files.isDirectory(hostRoot)) {
             log.warn("hostRoot 不存在或不是目录: {}", hostRoot);
-            return;
+            return new int[]{0, 0};
         }
 
         int cleanedAppDirs = 0;
@@ -137,6 +118,7 @@ public class OrphanedDataCleaner {
         }
 
         log.info("清理磁盘数据完成: 应用目录={}, run日志={}", cleanedAppDirs, cleanedRunLogs);
+        return new int[]{cleanedAppDirs, cleanedRunLogs};
     }
 
     /**
@@ -205,10 +187,10 @@ public class OrphanedDataCleaner {
     /**
      * 清理 MongoDB 中的孤立数据库
      */
-    private void cleanOrphanedMongoDatabases(Set<Long> existingAppIds) {
+    private int cleanOrphanedMongoDatabases(Set<Long> existingAppIds) {
         if (props.getMongo() == null || !props.getMongo().isEnabled()) {
             log.debug("MongoDB 未启用，跳过数据库清理");
-            return;
+            return 0;
         }
 
         int cleaned = 0;
@@ -244,6 +226,7 @@ public class OrphanedDataCleaner {
         }
 
         log.info("清理MongoDB数据库完成: 已清理={}", cleaned);
+        return cleaned;
     }
 
     /**
@@ -260,5 +243,38 @@ public class OrphanedDataCleaner {
             }
         }
         Files.delete(dir);
+    }
+
+    /**
+     * 清理结果
+     */
+    public static class CleanupResult {
+        private final int cleanedAppDirs;
+        private final int cleanedRunLogs;
+        private final int cleanedDatabases;
+        private final String message;
+
+        public CleanupResult(int cleanedAppDirs, int cleanedRunLogs, int cleanedDatabases, String message) {
+            this.cleanedAppDirs = cleanedAppDirs;
+            this.cleanedRunLogs = cleanedRunLogs;
+            this.cleanedDatabases = cleanedDatabases;
+            this.message = message;
+        }
+
+        public int getCleanedAppDirs() {
+            return cleanedAppDirs;
+        }
+
+        public int getCleanedRunLogs() {
+            return cleanedRunLogs;
+        }
+
+        public int getCleanedDatabases() {
+            return cleanedDatabases;
+        }
+
+        public String getMessage() {
+            return message;
+        }
     }
 }
