@@ -2,6 +2,7 @@ package fun.ai.studio.workspace;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
+import org.springframework.util.StringUtils;
 
 /**
  * Workspace（用户在线开发容器）配置
@@ -169,12 +170,8 @@ public class WorkspaceProperties {
     private int runLogKeepPerType = 3;
 
     /**
-     * Mongo（可选）：在 workspace 用户容器内提供本地 MongoDB（同一用户容器仅一个 mongod 实例）
-     * 隔离方式：同一个 mongod 下按 appId 使用不同 dbName（默认前缀 db_）。
-     *
-     * 约定：
-     * - 宿主机使用 bind mount 持久化：{hostRoot}/{userId}/mongo/db
-     * - 容器内 dbPath 默认：/data/db
+     * Mongo（独立服务器模式）：连接到独立 MongoDB 服务器
+     * 数据库命名：db_{appId}（保持原有命名方式，对前端无影响）
      */
     private MongoProperties mongo = new MongoProperties();
 
@@ -412,54 +409,40 @@ public class WorkspaceProperties {
 
     public static class MongoProperties {
         /**
-         * 是否启用（要求 workspace image 内包含 mongod/mongosh）
+         * 是否启用 MongoDB 功能
          */
         private boolean enabled = false;
 
         /**
-         * 宿主机数据库持久化根目录：{hostRoot}/{userId}/mongo/...
-         * 示例：/data/funai/database
+         * MongoDB 服务器地址（独立服务器）
          */
-        private String hostRoot;
+        private String host = "172.21.138.88";
 
         /**
-         * 容器内 Mongo 数据目录（mongod --dbpath）
-         */
-        private String containerDbPath = "/data/db";
-
-        /**
-         * 容器内 Mongo 日志目录
-         */
-        private String containerLogDir = "/var/log/mongodb";
-
-        /**
-         * mongod bindIp（推荐 127.0.0.1，仅容器内访问）
-         */
-        private String bindIp = "127.0.0.1";
-
-        /**
-         * mongod 端口
+         * MongoDB 服务器端口
          */
         private int port = 27017;
 
         /**
-         * 逻辑库名前缀：最终 dbName = {dbNamePrefix}{appId}
+         * 认证用户名
+         */
+        private String username;
+
+        /**
+         * 认证密码
+         */
+        private String password;
+
+        /**
+         * 认证数据库
+         */
+        private String authSource = "admin";
+
+        /**
+         * 数据库名前缀：最终 dbName = {dbNamePrefix}{appId}
+         * 例如：db_ -> db_2001（保持原有命名方式）
          */
         private String dbNamePrefix = "db_";
-
-        /**
-         * 日志文件名（位于 containerLogDir 下）
-         */
-        private String logFileName = "mongod.log";
-
-        /**
-         * mongod WiredTiger cache 大小（GB，可选）
-         * <p>
-         * MongoDB 默认会按可用内存估算一个较大的 cache（常见约 50%），在 2GiB 机器上会导致“常态内存占用很高”。\n
-         * 建议 2GiB：0.25（约 256MB）或更小。\n
-         * 该值会注入到启动参数：--wiredTigerCacheSizeGB
-         */
-        private Double wiredTigerCacheSizeGB;
 
         public boolean isEnabled() {
             return enabled;
@@ -469,36 +452,12 @@ public class WorkspaceProperties {
             this.enabled = enabled;
         }
 
-        public String getHostRoot() {
-            return hostRoot;
+        public String getHost() {
+            return host;
         }
 
-        public void setHostRoot(String hostRoot) {
-            this.hostRoot = hostRoot;
-        }
-
-        public String getContainerDbPath() {
-            return containerDbPath;
-        }
-
-        public void setContainerDbPath(String containerDbPath) {
-            this.containerDbPath = containerDbPath;
-        }
-
-        public String getContainerLogDir() {
-            return containerLogDir;
-        }
-
-        public void setContainerLogDir(String containerLogDir) {
-            this.containerLogDir = containerLogDir;
-        }
-
-        public String getBindIp() {
-            return bindIp;
-        }
-
-        public void setBindIp(String bindIp) {
-            this.bindIp = bindIp;
+        public void setHost(String host) {
+            this.host = host;
         }
 
         public int getPort() {
@@ -509,6 +468,30 @@ public class WorkspaceProperties {
             this.port = port;
         }
 
+        public String getUsername() {
+            return username;
+        }
+
+        public void setUsername(String username) {
+            this.username = username;
+        }
+
+        public String getPassword() {
+            return password;
+        }
+
+        public void setPassword(String password) {
+            this.password = password;
+        }
+
+        public String getAuthSource() {
+            return authSource;
+        }
+
+        public void setAuthSource(String authSource) {
+            this.authSource = authSource;
+        }
+
         public String getDbNamePrefix() {
             return dbNamePrefix;
         }
@@ -517,22 +500,76 @@ public class WorkspaceProperties {
             this.dbNamePrefix = dbNamePrefix;
         }
 
-        public String getLogFileName() {
-            return logFileName;
+        /**
+         * 根据 appId 生成数据库名（保持原有命名方式）
+         */
+        public String generateDbName(Long appId) {
+            if (appId == null) return dbNamePrefix + "0";
+            return dbNamePrefix + appId;
         }
 
-        public void setLogFileName(String logFileName) {
-            this.logFileName = logFileName;
+        /**
+         * 生成 MongoDB 连接字符串（用于容器内环境变量）
+         */
+        public String getConnectionString(Long appId) {
+            String dbName = generateDbName(appId);
+            if (StringUtils.hasText(username) && StringUtils.hasText(password)) {
+                // URL 编码密码（特殊字符如 ! 需要编码）
+                String encodedPassword = urlEncodePassword(password);
+                return String.format("mongodb://%s:%s@%s:%d/%s?authSource=%s",
+                        username, encodedPassword, host, port, dbName, authSource);
+            } else {
+                return String.format("mongodb://%s:%d/%s", host, port, dbName);
+            }
         }
 
-        public Double getWiredTigerCacheSizeGB() {
-            return wiredTigerCacheSizeGB;
+        private String urlEncodePassword(String pwd) {
+            if (pwd == null) return "";
+            try {
+                return java.net.URLEncoder.encode(pwd, java.nio.charset.StandardCharsets.UTF_8);
+            } catch (Exception e) {
+                return pwd;
+            }
         }
 
-        public void setWiredTigerCacheSizeGB(Double wiredTigerCacheSizeGB) {
-            this.wiredTigerCacheSizeGB = wiredTigerCacheSizeGB;
+        /**
+         * Shell 单引号转义（用于 bash 脚本）
+         */
+        private String escapeShellSingleQuote(String s) {
+            if (s == null) return "";
+            // 在单引号字符串中，单引号需要结束当前字符串，添加转义的单引号，再开始新字符串
+            return s.replace("'", "'\\''");
+        }
+
+        /**
+         * 生成 Mongo 环境变量（用于注入到容器启动脚本）
+         */
+        public String generateMongoEnvVars(Long appId) {
+            if (!enabled) return "";
+            
+            String dbName = generateDbName(appId);
+            String mongoUrl = getConnectionString(appId);
+            
+            StringBuilder sb = new StringBuilder();
+            sb.append("export MONGO_HOST='").append(escapeShellSingleQuote(host)).append("'\n");
+            sb.append("export MONGO_PORT='").append(port).append("'\n");
+            
+            if (StringUtils.hasText(username)) {
+                sb.append("export MONGO_USERNAME='").append(escapeShellSingleQuote(username)).append("'\n");
+            }
+            if (StringUtils.hasText(password)) {
+                sb.append("export MONGO_PASSWORD='").append(escapeShellSingleQuote(password)).append("'\n");
+            }
+            if (StringUtils.hasText(authSource)) {
+                sb.append("export MONGO_AUTH_SOURCE='").append(escapeShellSingleQuote(authSource)).append("'\n");
+            }
+            
+            sb.append("export MONGO_DB_PREFIX='").append(escapeShellSingleQuote(dbNamePrefix)).append("'\n");
+            sb.append("export MONGO_DB_NAME='").append(escapeShellSingleQuote(dbName)).append("'\n");
+            sb.append("export MONGO_URL='").append(escapeShellSingleQuote(mongoUrl)).append("'\n");
+            sb.append("export MONGODB_URI=\"$MONGO_URL\"\n");
+            
+            return sb.toString();
         }
     }
 }
-
-

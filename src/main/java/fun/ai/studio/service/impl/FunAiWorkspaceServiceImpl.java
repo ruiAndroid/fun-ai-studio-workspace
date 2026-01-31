@@ -96,16 +96,6 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
             try { pruneRunLogs(userId, "DEV", keep); } catch (Exception ignore) {}
         }
 
-        // Mongo（可选）：用户级持久化（同一用户容器仅一个 mongod 实例）
-        // 目录不应放在 workspace 下（在线编辑器实时同步会干扰 WiredTiger 文件），因此使用单独 hostRoot。
-        if (props.getMongo() != null && props.getMongo().isEnabled()) {
-            if (!StringUtils.hasText(props.getMongo().getHostRoot())) {
-                throw new IllegalArgumentException("funai.workspace.mongo.hostRoot 未配置");
-            }
-            ensureDir(resolveHostMongoDbDir(userId));
-            ensureDir(resolveHostMongoLogDir(userId));
-        }
-
         WorkspaceMeta meta = loadOrInitMeta(userId, hostUserDir);
         ensureContainerRunning(userId, hostUserDir, meta);
 
@@ -600,13 +590,7 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
                     + "export FUNAI_USER_ID='" + userId + "'\n"
                     + "export FUNAI_APP_ID='" + appId + "'\n"
                     + (props.getMongo() != null && props.getMongo().isEnabled()
-                    ? ""
-                    + "export MONGO_HOST='127.0.0.1'\n"
-                    + "export MONGO_PORT='" + (props.getMongo().getPort() > 0 ? props.getMongo().getPort() : 27017) + "'\n"
-                    + "export MONGO_DB_PREFIX='" + (StringUtils.hasText(props.getMongo().getDbNamePrefix()) ? props.getMongo().getDbNamePrefix() : "app_") + "'\n"
-                    + "export MONGO_DB_NAME=\"${MONGO_DB_PREFIX}" + appId + "\"\n"
-                    + "export MONGO_URL=\"mongodb://${MONGO_HOST}:${MONGO_PORT}/${MONGO_DB_NAME}\"\n"
-                    + "export MONGODB_URI=\"$MONGO_URL\"\n"
+                    ? props.getMongo().generateMongoEnvVars(appId)
                     : "")
                     + "echo \"[preview] npm run $RUN_SCRIPT on $PORT base=$BASE_PATH\" >>\"$LOG_FILE\" 2>&1\n"
                     + "TARGET_PORT_HEX=$(printf '%04X' \"$PORT\")\n"
@@ -673,12 +657,7 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
                     ? ""
                     + "export FUNAI_USER_ID='" + userId + "'\n"
                     + "export FUNAI_APP_ID='" + appId + "'\n"
-                    + "export MONGO_HOST='127.0.0.1'\n"
-                    + "export MONGO_PORT='" + (props.getMongo().getPort() > 0 ? props.getMongo().getPort() : 27017) + "'\n"
-                    + "export MONGO_DB_PREFIX='" + (StringUtils.hasText(props.getMongo().getDbNamePrefix()) ? props.getMongo().getDbNamePrefix() : "app_") + "'\n"
-                    + "export MONGO_DB_NAME=\"${MONGO_DB_PREFIX}" + appId + "\"\n"
-                    + "export MONGO_URL=\"mongodb://${MONGO_HOST}:${MONGO_PORT}/${MONGO_DB_NAME}\"\n"
-                    + "export MONGODB_URI=\"$MONGO_URL\"\n"
+                    + props.getMongo().generateMongoEnvVars(appId)
                     : "")
                     + "echo \"[dev-start] start at $(date -Is)\" >>\"$LOG_FILE\" 2>&1\n"
                     + "cd \"$APP_DIR\" >>\"$LOG_FILE\" 2>&1 || true\n"
@@ -2344,22 +2323,27 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
             cmd.add("npm_config_registry=" + props.getNpmRegistry());
         }
 
-        // mongo bind mount（可选）
+        // mongo 连接信息（独立服务器模式）
         if (props.getMongo() != null && props.getMongo().isEnabled()) {
-            Path hostMongoDb = resolveHostMongoDbDir(userId);
-            Path hostMongoLog = resolveHostMongoLogDir(userId);
-            cmd.add("-v");
-            cmd.add(hostMongoDb.toString() + ":" + props.getMongo().getContainerDbPath());
-            cmd.add("-v");
-            cmd.add(hostMongoLog.toString() + ":" + props.getMongo().getContainerLogDir());
-
-            // 注入连接信息（Node 侧按 appId 选择 dbName）
+            // 注入连接信息（容器启动时的环境变量）
             cmd.add("-e");
             cmd.add("FUNAI_USER_ID=" + userId);
             cmd.add("-e");
-            cmd.add("MONGO_HOST=127.0.0.1");
+            cmd.add("MONGO_HOST=" + props.getMongo().getHost());
             cmd.add("-e");
             cmd.add("MONGO_PORT=" + props.getMongo().getPort());
+            if (StringUtils.hasText(props.getMongo().getUsername())) {
+                cmd.add("-e");
+                cmd.add("MONGO_USERNAME=" + props.getMongo().getUsername());
+            }
+            if (StringUtils.hasText(props.getMongo().getPassword())) {
+                cmd.add("-e");
+                cmd.add("MONGO_PASSWORD=" + props.getMongo().getPassword());
+            }
+            if (StringUtils.hasText(props.getMongo().getAuthSource())) {
+                cmd.add("-e");
+                cmd.add("MONGO_AUTH_SOURCE=" + props.getMongo().getAuthSource());
+            }
             cmd.add("-e");
             cmd.add("MONGO_DB_PREFIX=" + props.getMongo().getDbNamePrefix());
         }
@@ -2576,18 +2560,8 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
     }
 
     private boolean hasExpectedMongoMounts(Long userId, String containerName) {
-        try {
-            if (userId == null || !StringUtils.hasText(containerName)) return true;
-            if (props.getMongo() == null || !props.getMongo().isEnabled()) return true;
-            // 若未配置 hostRoot，则 ensureWorkspace 早已抛错；这里不再重复阻断
-            Path hostMongoDb = resolveHostMongoDbDir(userId);
-            Path hostMongoLog = resolveHostMongoLogDir(userId);
-            String dbDest = props.getMongo().getContainerDbPath();
-            String logDest = props.getMongo().getContainerLogDir();
-            return hasExpectedMount(containerName, hostMongoDb, dbDest) && hasExpectedMount(containerName, hostMongoLog, logDest);
-        } catch (Exception ignore) {
-            return true;
-        }
+        // 独立服务器模式：不再需要检查 mount
+        return true;
     }
 
     private String queryContainerImage(String containerName) {
@@ -2643,47 +2617,8 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
     }
 
     private String buildContainerBootstrapCommand(Long userId) {
-        // 某些基础镜像/BusyBox 可能不支持 `sleep infinity`，会导致容器立刻退出，status 永远 EXITED
-        // 用更通用的方式保持容器常驻；如启用 mongo，则尽量在容器启动时拉起 mongod（若镜像未包含 mongod，则跳过）
-        if (props.getMongo() == null || !props.getMongo().isEnabled()) {
-            return "while true; do sleep 3600; done";
-        }
-
-        String dbPath = props.getMongo().getContainerDbPath();
-        String logDir = props.getMongo().getContainerLogDir();
-        String logFile = logDir + "/" + (StringUtils.hasText(props.getMongo().getLogFileName()) ? props.getMongo().getLogFileName() : "mongod.log");
-        String bindIp = StringUtils.hasText(props.getMongo().getBindIp()) ? props.getMongo().getBindIp() : "127.0.0.1";
-        int port = props.getMongo().getPort() > 0 ? props.getMongo().getPort() : 27017;
-        Double wtCacheGb = props.getMongo().getWiredTigerCacheSizeGB();
-        String wtArg = (wtCacheGb != null && wtCacheGb > 0) ? (" --wiredTigerCacheSizeGB " + wtCacheGb) : "";
-
-        return ""
-                + "set -e\n"
-                + "echo \"[bootstrap] userId=" + userId + "\"\n"
-                + "if command -v mongod >/dev/null 2>&1; then\n"
-                + "  mkdir -p '" + dbPath + "' '" + logDir + "'\n"
-                + "  echo \"[bootstrap] starting mongod...\" \n"
-                + "  (mongod --dbpath '" + dbPath + "' --bind_ip '" + bindIp + "' --port " + port + " --logpath '" + logFile + "' --logappend" + wtArg + " >/dev/null 2>&1 &) || true\n"
-                + "else\n"
-                + "  echo \"[bootstrap] mongod not found in image, skip\" \n"
-                + "fi\n"
-                + "while true; do sleep 3600; done";
-    }
-
-    private Path resolveHostMongoUserDir(Long userId) {
-        String root = props.getMongo() == null ? null : props.getMongo().getHostRoot();
-        if (!StringUtils.hasText(root)) {
-            throw new IllegalArgumentException("funai.workspace.mongo.hostRoot 未配置");
-        }
-        return Paths.get(root, String.valueOf(userId), "mongo");
-    }
-
-    private Path resolveHostMongoDbDir(Long userId) {
-        return resolveHostMongoUserDir(userId).resolve("db");
-    }
-
-    private Path resolveHostMongoLogDir(Long userId) {
-        return resolveHostMongoUserDir(userId).resolve("log");
+        // 独立服务器模式：容器不再需要启动 mongod，只需保持常驻
+        return "while true; do sleep 3600; done";
     }
 
     private String queryContainerStatus(String containerName) {

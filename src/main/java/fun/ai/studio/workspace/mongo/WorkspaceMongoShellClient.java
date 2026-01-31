@@ -165,8 +165,24 @@ public class WorkspaceMongoShellClient {
     }
 
     private Map<?, ?> runMongoShellJson(MongoShell shell, String containerName, String dbName, String script, boolean allowRetry) {
-        // 连接串用 localhost，避免依赖容器网络/端口映射
-        String uri = "mongodb://127.0.0.1:" + mongoPort() + "/" + dbName;
+        // 使用独立服务器连接串（从配置读取）
+        WorkspaceProperties.MongoProperties mongoCfg = workspaceProperties.getMongo();
+        String host = mongoCfg.getHost();
+        int port = mongoCfg.getPort();
+        String username = mongoCfg.getUsername();
+        String password = mongoCfg.getPassword();
+        String authSource = mongoCfg.getAuthSource();
+        
+        // 构建连接字符串
+        String uri;
+        if (StringUtils.hasText(username) && StringUtils.hasText(password)) {
+            // 需要认证
+            uri = String.format("mongodb://%s:%s@%s:%d/%s?authSource=%s",
+                    username, password, host, port, dbName, authSource);
+        } else {
+            uri = String.format("mongodb://%s:%d/%s", host, port, dbName);
+        }
+        
         List<String> cmd = List.of(
                 "docker", "exec", "-i", containerName,
                 shell.bin, uri,
@@ -191,7 +207,7 @@ public class WorkspaceMongoShellClient {
         // podman-docker 可能会把告警打印到 stdout，取最后一行非空输出作为 JSON
         String out = lastNonEmptyLine(r.getOutput());
         if (!StringUtils.hasText(out)) {
-            throw new IllegalStateException(shell.bin + " 无输出：请确认容器内 mongod 正常运行");
+            throw new IllegalStateException(shell.bin + " 无输出：请确认 MongoDB 服务器正常运行且网络可达");
         }
         // CommandRunner 最多抓 32KB，若 JSON 被截断，这里会解析失败并给出可操作提示
         try {
