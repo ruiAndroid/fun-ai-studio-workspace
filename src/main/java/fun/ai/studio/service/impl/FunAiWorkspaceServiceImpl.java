@@ -49,6 +49,7 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
     private final WorkspaceProperties props;
     private final CommandRunner commandRunner;
     private final ObjectMapper objectMapper;
+    private final fun.ai.studio.workspace.mongo.WorkspaceMongoShellClient workspaceMongoShellClient;
 
     /**
      * Workspace 会调用 docker/podman 执行 stop/rm 等操作。
@@ -60,10 +61,12 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
 
     public FunAiWorkspaceServiceImpl(WorkspaceProperties props,
                                      CommandRunner commandRunner,
-                                     ObjectMapper objectMapper) {
+                                     ObjectMapper objectMapper,
+                                     fun.ai.studio.workspace.mongo.WorkspaceMongoShellClient workspaceMongoShellClient) {
         this.props = props;
         this.commandRunner = commandRunner;
         this.objectMapper = objectMapper;
+        this.workspaceMongoShellClient = workspaceMongoShellClient;
     }
 
     @Override
@@ -1924,7 +1927,26 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
             log.warn("cleanup workspace run meta failed: userId={}, appId={}, err={}", userId, appId, e.getMessage());
         }
 
-        // 2) 删除该 appId 对应的历史 run 日志（避免 run 目录无限累积）
+        // 2) 删除 MongoDB 数据库（88 服务器上的独立数据库）
+        if (props.getMongo() != null && props.getMongo().isEnabled()) {
+            try {
+                String dbName = props.getMongo().generateDbName(appId);
+                log.info("删除 MongoDB 数据库: userId={}, appId={}, dbName={}", userId, appId, dbName);
+                
+                // 直接从 87 服务器连接到 88 服务器删除数据库（不依赖用户容器）
+                boolean dropped = workspaceMongoShellClient.dropDatabase(dbName);
+                if (dropped) {
+                    log.info("成功删除 MongoDB 数据库: dbName={}", dbName);
+                } else {
+                    log.warn("删除 MongoDB 数据库失败（可能不存在）: dbName={}", dbName);
+                }
+            } catch (Exception e) {
+                // MongoDB 删除失败不阻断应用删除流程
+                log.warn("删除 MongoDB 数据库失败: userId={}, appId={}, err={}", userId, appId, e.getMessage(), e);
+            }
+        }
+
+        // 3) 删除该 appId 对应的历史 run 日志（避免 run 目录无限累积）
         // 日志命名约定：run/run-{type}-{appId}-{timestamp}.log
         cleanupRunLogsForApp(hostRunDir, userId, appId);
 

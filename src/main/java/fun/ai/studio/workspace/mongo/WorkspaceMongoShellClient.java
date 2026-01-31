@@ -164,6 +164,70 @@ public class WorkspaceMongoShellClient {
         return out;
     }
 
+    /**
+     * 删除指定数据库（用于应用删除时清理）
+     * 注意：此操作不可逆，需要调用方确保已做权限校验
+     * 
+     * 此方法直接从 workspace 服务器连接到 MongoDB 服务器，不依赖用户容器
+     */
+    public boolean dropDatabase(String dbName) {
+        assertMongoEnabled();
+        assertDbName(dbName);
+        
+        // 安全检查：只允许删除 workspace 数据库（db_ 前缀）
+        if (!dbName.startsWith(workspaceProperties.getMongo().getDbNamePrefix())) {
+            throw new IllegalArgumentException("只允许删除 workspace 数据库（" + workspaceProperties.getMongo().getDbNamePrefix() + "* 前缀）");
+        }
+        
+        // 直接从 87 服务器连接到 88 服务器的 MongoDB
+        WorkspaceProperties.MongoProperties mongoCfg = workspaceProperties.getMongo();
+        String host = mongoCfg.getHost();
+        int port = mongoCfg.getPort();
+        String username = mongoCfg.getUsername();
+        String password = mongoCfg.getPassword();
+        String authSource = mongoCfg.getAuthSource();
+        
+        // 构建连接字符串
+        String uri;
+        if (StringUtils.hasText(username) && StringUtils.hasText(password)) {
+            uri = String.format("mongodb://%s:%s@%s:%d/%s?authSource=%s",
+                    username, password, host, port, dbName, authSource);
+        } else {
+            uri = String.format("mongodb://%s:%d/%s", host, port, dbName);
+        }
+        
+        // 使用 mongosh 命令行工具直接连接（不依赖容器）
+        String script = "db.dropDatabase()";
+        List<String> cmd = List.of(
+                "mongosh", uri,
+                "--quiet",
+                "--eval", script
+        );
+        
+        try {
+            CommandResult r = commandRunner.run(Duration.ofSeconds(10), cmd);
+            if (!r.isSuccess()) {
+                throw new RuntimeException("删除数据库失败: exitCode=" + r.getExitCode() + ", output=" + r.getOutput());
+            }
+            
+            // 解析输出，检查是否成功
+            String out = lastNonEmptyLine(r.getOutput());
+            if (StringUtils.hasText(out)) {
+                try {
+                    Map<?, ?> result = objectMapper.readValue(out, Map.class);
+                    Object ok = result.get("ok");
+                    return ok != null && (ok.equals(1) || ok.equals(1.0) || "1".equals(ok.toString()));
+                } catch (Exception e) {
+                    // 如果解析失败，检查输出中是否包含成功标识
+                    return out.contains("\"ok\"") && (out.contains(":1") || out.contains(": 1"));
+                }
+            }
+            return false;
+        } catch (Exception e) {
+            throw new RuntimeException("删除数据库失败: " + dbName + ", error: " + e.getMessage(), e);
+        }
+    }
+
     private Map<?, ?> runMongoShellJson(MongoShell shell, String containerName, String dbName, String script, boolean allowRetry) {
         // 使用独立服务器连接串（从配置读取）
         WorkspaceProperties.MongoProperties mongoCfg = workspaceProperties.getMongo();
