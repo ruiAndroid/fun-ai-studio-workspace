@@ -25,6 +25,11 @@ public class WorkspaceActivityTracker {
     public Map<Long, Long> snapshot() {
         return new ConcurrentHashMap<>(lastActiveAtMs);
     }
+
+    public void remove(Long userId) {
+        if (userId == null) return;
+        lastActiveAtMs.remove(userId);
+    }
 }
 
 

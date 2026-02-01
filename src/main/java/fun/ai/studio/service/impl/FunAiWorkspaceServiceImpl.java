@@ -50,6 +50,7 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
     private final CommandRunner commandRunner;
     private final ObjectMapper objectMapper;
     private final fun.ai.studio.workspace.mongo.WorkspaceMongoShellClient workspaceMongoShellClient;
+    private final fun.ai.studio.workspace.WorkspaceActivityTracker activityTracker;
 
     /**
      * Workspace 会调用 docker/podman 执行 stop/rm 等操作。
@@ -62,11 +63,13 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
     public FunAiWorkspaceServiceImpl(WorkspaceProperties props,
                                      CommandRunner commandRunner,
                                      ObjectMapper objectMapper,
-                                     fun.ai.studio.workspace.mongo.WorkspaceMongoShellClient workspaceMongoShellClient) {
+                                     fun.ai.studio.workspace.mongo.WorkspaceMongoShellClient workspaceMongoShellClient,
+                                     fun.ai.studio.workspace.WorkspaceActivityTracker activityTracker) {
         this.props = props;
         this.commandRunner = commandRunner;
         this.objectMapper = objectMapper;
         this.workspaceMongoShellClient = workspaceMongoShellClient;
+        this.activityTracker = activityTracker;
     }
 
     @Override
@@ -1849,10 +1852,14 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
         String containerName = containerNameFromMetaOrDefault(hostUserDir, userId);
         String status = queryContainerStatus(containerName);
         if (!"RUNNING".equalsIgnoreCase(status)) {
+            // 容器已经不在运行，清除 tracker 记录避免重复日志
+            activityTracker.remove(userId);
             return;
         }
         try {
             docker("stop", containerName);
+            // 成功停止后清除 tracker 记录
+            activityTracker.remove(userId);
         } catch (Exception ignore) {
         }
 
@@ -1876,7 +1883,10 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
         // 2) 删除容器（强制，含 podman conmon 异常兜底）
         tryRemoveContainer(containerName);
 
-        // 3) 刷新 last-known：容器状态应为 NOT_CREATED
+        // 3) 清除 tracker 记录
+        activityTracker.remove(userId);
+
+        // 4) 刷新 last-known：容器状态应为 NOT_CREATED
         FunAiWorkspaceStatusResponse resp = new FunAiWorkspaceStatusResponse();
         resp.setUserId(userId);
         resp.setContainerName(containerName);
