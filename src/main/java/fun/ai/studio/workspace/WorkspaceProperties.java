@@ -175,6 +175,21 @@ public class WorkspaceProperties {
      */
     private MongoProperties mongo = new MongoProperties();
 
+    /**
+     * API 测试默认超时时间（秒）
+     */
+    private int testDefaultTimeoutSeconds = 30;
+
+    /**
+     * API 测试最大超时时间（秒）
+     */
+    private int testMaxTimeoutSeconds = 300;
+
+    /**
+     * API 测试输出最大大小（字节）
+     */
+    private long testMaxOutputSizeBytes = 10485760; // 10MB
+
     public boolean isEnabled() {
         return enabled;
     }
@@ -405,6 +420,30 @@ public class WorkspaceProperties {
 
     public void setMongo(MongoProperties mongo) {
         this.mongo = mongo;
+    }
+
+    public int getTestDefaultTimeoutSeconds() {
+        return testDefaultTimeoutSeconds;
+    }
+
+    public void setTestDefaultTimeoutSeconds(int testDefaultTimeoutSeconds) {
+        this.testDefaultTimeoutSeconds = testDefaultTimeoutSeconds;
+    }
+
+    public int getTestMaxTimeoutSeconds() {
+        return testMaxTimeoutSeconds;
+    }
+
+    public void setTestMaxTimeoutSeconds(int testMaxTimeoutSeconds) {
+        this.testMaxTimeoutSeconds = testMaxTimeoutSeconds;
+    }
+
+    public long getTestMaxOutputSizeBytes() {
+        return testMaxOutputSizeBytes;
+    }
+
+    public void setTestMaxOutputSizeBytes(long testMaxOutputSizeBytes) {
+        this.testMaxOutputSizeBytes = testMaxOutputSizeBytes;
     }
 
     public static class MongoProperties {

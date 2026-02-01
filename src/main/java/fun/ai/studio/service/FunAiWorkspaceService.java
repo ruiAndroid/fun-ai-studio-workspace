@@ -1,5 +1,6 @@
 package fun.ai.studio.service;
 
+import fun.ai.studio.entity.response.FunAiWorkspaceApiTestResponse;
 import fun.ai.studio.entity.response.FunAiWorkspaceInfoResponse;
 import fun.ai.studio.entity.response.FunAiWorkspaceFileReadResponse;
 import fun.ai.studio.entity.response.FunAiWorkspaceFileTreeResponse;
@@ -109,8 +110,9 @@ public interface FunAiWorkspaceService {
 
     /**
      * 给 idle 回收任务使用：不要因为 stopRun 而拉起容器。
+     * @return true 如果执行了停止操作，false 如果 run 已经停止
      */
-    void stopRunForIdle(Long userId);
+    boolean stopRunForIdle(Long userId);
 
     /**
      * 给 idle 回收任务使用：不要拉起容器。
@@ -132,6 +134,17 @@ public interface FunAiWorkspaceService {
      * - 必要时清理 run 元数据并将 last-known 运行态落库为 IDLE
      */
     void cleanupWorkspaceOnAppDeleted(Long userId, Long appId);
+
+    /**
+     * 在 workspace 容器内执行 curl 命令进行 API 测试
+     * 
+     * @param userId 用户 ID
+     * @param appId 应用 ID
+     * @param curlCommand 完整的 curl 命令
+     * @param timeoutSeconds 超时时间（秒）
+     * @return API 测试响应
+     */
+    FunAiWorkspaceApiTestResponse executeCurlCommand(Long userId, Long appId, String curlCommand, Integer timeoutSeconds);
 }
 
 

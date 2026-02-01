@@ -49,13 +49,18 @@ public class WorkspaceIdleReaper {
 
             try {
                 if (idle >= stopContainerMs) {
-                    log.info("idle reaper: stop container: userId={}, idleMs={}, thresholdMs={}", userId, idle, stopContainerMs);
                     // 先 stop run 再停容器（避免残留 pid/meta）
-                    workspaceService.stopRunForIdle(userId);
+                    boolean runStopped = workspaceService.stopRunForIdle(userId);
+                    if (runStopped) {
+                        log.info("idle reaper: stopped run: userId={}, idleMs={}, thresholdMs={}", userId, idle, stopRunMs);
+                    }
+                    log.info("idle reaper: stop container: userId={}, idleMs={}, thresholdMs={}", userId, idle, stopContainerMs);
                     workspaceService.stopContainerForIdle(userId);
                 } else if (idle >= stopRunMs) {
-                    log.info("idle reaper: stop run: userId={}, idleMs={}, thresholdMs={}", userId, idle, stopRunMs);
-                    workspaceService.stopRunForIdle(userId);
+                    boolean stopped = workspaceService.stopRunForIdle(userId);
+                    if (stopped) {
+                        log.info("idle reaper: stop run: userId={}, idleMs={}, thresholdMs={}", userId, idle, stopRunMs);
+                    }
                 }
             } catch (Exception ex) {
                 log.warn("idle reaper failed: userId={}, idleMs={}, error={}", userId, idle, ex.getMessage());

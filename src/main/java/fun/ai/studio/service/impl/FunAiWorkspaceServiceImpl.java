@@ -1,6 +1,7 @@
 package fun.ai.studio.service.impl;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import fun.ai.studio.entity.response.FunAiWorkspaceApiTestResponse;
 import fun.ai.studio.entity.response.FunAiWorkspaceInfoResponse;
 import fun.ai.studio.entity.response.FunAiWorkspaceFileNode;
 import fun.ai.studio.entity.response.FunAiWorkspaceFileReadResponse;
@@ -12,6 +13,7 @@ import fun.ai.studio.entity.response.FunAiWorkspaceStatusResponse;
 import fun.ai.studio.service.FunAiWorkspaceService;
 import fun.ai.studio.workspace.CommandResult;
 import fun.ai.studio.workspace.CommandRunner;
+import fun.ai.studio.workspace.CurlCommandValidator;
 import fun.ai.studio.workspace.WorkspaceMeta;
 import fun.ai.studio.workspace.WorkspaceProperties;
 import fun.ai.studio.workspace.ZipUtils;
@@ -51,6 +53,7 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
     private final ObjectMapper objectMapper;
     private final fun.ai.studio.workspace.mongo.WorkspaceMongoShellClient workspaceMongoShellClient;
     private final fun.ai.studio.workspace.WorkspaceActivityTracker activityTracker;
+    private final CurlCommandValidator curlCommandValidator;
 
     /**
      * Workspace 会调用 docker/podman 执行 stop/rm 等操作。
@@ -64,12 +67,14 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
                                      CommandRunner commandRunner,
                                      ObjectMapper objectMapper,
                                      fun.ai.studio.workspace.mongo.WorkspaceMongoShellClient workspaceMongoShellClient,
-                                     fun.ai.studio.workspace.WorkspaceActivityTracker activityTracker) {
+                                     fun.ai.studio.workspace.WorkspaceActivityTracker activityTracker,
+                                     CurlCommandValidator curlCommandValidator) {
         this.props = props;
         this.commandRunner = commandRunner;
         this.objectMapper = objectMapper;
         this.workspaceMongoShellClient = workspaceMongoShellClient;
         this.activityTracker = activityTracker;
+        this.curlCommandValidator = curlCommandValidator;
     }
 
     @Override
@@ -1809,16 +1814,18 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
     }
 
     @Override
-    public void stopRunForIdle(Long userId) {
-        if (userId == null) return;
-        if (!props.isEnabled()) return;
+    public boolean stopRunForIdle(Long userId) {
+        if (userId == null) return false;
+        if (!props.isEnabled()) return false;
 
         Path hostUserDir = resolveHostWorkspaceDir(userId);
         Path runDir = hostUserDir.resolve("run");
         Path pidPath = runDir.resolve("dev.pid");
         Path metaPath = runDir.resolve("current.json");
+        
+        // 如果 run 文件都不存在，说明已经停止，直接返回 false（避免重复日志）
         if (Files.notExists(pidPath) && Files.notExists(metaPath)) {
-            return;
+            return false;
         }
 
         String containerName = containerNameFromMetaOrDefault(hostUserDir, userId);
@@ -1840,7 +1847,8 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
             } catch (Exception ignore) {
             }
         }
-
+        
+        return true;
     }
 
     @Override
@@ -2696,6 +2704,98 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
         cmd.add("docker");
         for (String a : args) cmd.add(a);
         return commandRunner.run(CMD_TIMEOUT, cmd);
+    }
+
+    @Override
+    public FunAiWorkspaceApiTestResponse executeCurlCommand(Long userId, Long appId, String curlCommand, Integer timeoutSeconds) {
+        assertEnabled();
+        if (userId == null) {
+            throw new IllegalArgumentException("userId 不能为空");
+        }
+        if (appId == null) {
+            throw new IllegalArgumentException("appId 不能为空");
+        }
+        if (curlCommand == null || curlCommand.isBlank()) {
+            throw new IllegalArgumentException("curlCommand 不能为空");
+        }
+
+        // 验证 curl 命令安全性
+        curlCommandValidator.validate(curlCommand);
+
+        // 验证超时参数
+        int timeout = timeoutSeconds == null ? props.getTestDefaultTimeoutSeconds() : timeoutSeconds;
+        if (timeout < 1 || timeout > props.getTestMaxTimeoutSeconds()) {
+            throw new IllegalArgumentException("timeoutSeconds 必须在 1 到 " + props.getTestMaxTimeoutSeconds() + " 之间");
+        }
+
+        // 确保容器存在并运行
+        Path hostUserDir = resolveHostWorkspaceDir(userId);
+        WorkspaceMeta meta = loadOrInitMeta(userId, hostUserDir);
+        ensureContainerRunning(userId, hostUserDir, meta);
+        String containerName = meta.getContainerName();
+
+        FunAiWorkspaceApiTestResponse response = new FunAiWorkspaceApiTestResponse();
+        response.setUserId(userId);
+        response.setAppId(appId);
+
+        try {
+            // 构造 docker exec 命令
+            List<String> cmd = new ArrayList<>();
+            cmd.add("docker");
+            cmd.add("exec");
+            cmd.add(containerName);
+            cmd.add("bash");
+            cmd.add("-c");
+            cmd.add(curlCommand);
+
+            // 记录开始时间
+            long startTime = System.currentTimeMillis();
+
+            // 执行命令
+            CommandResult result = commandRunner.run(Duration.ofSeconds(timeout), cmd);
+
+            // 记录结束时间
+            long endTime = System.currentTimeMillis();
+            long executionTimeMs = endTime - startTime;
+
+            // 处理输出（CommandResult 只有一个 output 字段，包含 stdout 和 stderr）
+            String output = result.getOutput() == null ? "" : result.getOutput();
+            long maxSize = props.getTestMaxOutputSizeBytes();
+
+            boolean outputTruncated = false;
+            long outputOriginalSize = output.length();
+            if (output.length() > maxSize) {
+                output = output.substring(0, (int) maxSize);
+                outputTruncated = true;
+            }
+
+            // 构造响应
+            response.setSuccess(true);
+            response.setStdout(output);
+            response.setStderr("");  // CommandResult 不分离 stderr
+            response.setExitCode(result.getExitCode());
+            response.setExecutionTimeMs(executionTimeMs);
+            response.setStdoutTruncated(outputTruncated);
+            response.setStderrTruncated(false);
+            response.setStdoutOriginalSize(outputOriginalSize);
+            response.setStderrOriginalSize(0L);
+
+            // 检查是否超时
+            if (result.getExitCode() == 124) {
+                response.setSuccess(false);
+                response.setErrorType("TIMEOUT");
+                response.setMessage("Command execution timed out after " + timeout + " seconds");
+            }
+
+        } catch (Exception e) {
+            response.setSuccess(false);
+            response.setErrorType("EXECUTION_ERROR");
+            response.setMessage("Execution failed: " + e.getMessage());
+            response.setExecutionTimeMs(0L);
+            log.error("execute curl command failed: userId={}, appId={}, error={}", userId, appId, e.getMessage(), e);
+        }
+
+        return response;
     }
 }
 
