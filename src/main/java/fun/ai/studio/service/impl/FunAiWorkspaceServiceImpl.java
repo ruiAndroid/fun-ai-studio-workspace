@@ -369,7 +369,7 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
                     + "检测到 scripts=" + keys + "。"
                     + "请在 scripts 中添加 start 或 preview（推荐），或至少提供 dev（开发模式）。");
         }
-        // 将具体脚本名传入受控运行：START 模式统一做端口/BASE_PATH 注入。
+        // 将具体脚本名传入受控运行：START 模式统一做端口/基路径注入。
         return startManagedRun(userId, appId, "START:" + script);
     }
 
@@ -391,7 +391,7 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
     /**
      * 受控运行（非阻塞）：统一产出 run/current.json、run/dev.pid、run/dev.log
      * - DEV：npm run dev（并强制端口 + base）
-     * - START：npm run start（注入 PORT/HOST/BASE_PATH）
+     * - START：npm run start（注入 PORT/HOST）
      * - BUILD：npm run build（执行完成后写入 exitCode/finishedAt，并清理 pid 文件）
      * - INSTALL：npm install（执行完成后写入 exitCode/finishedAt，并清理 pid 文件）
      */
@@ -580,7 +580,6 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
                     + "export HOST=\"0.0.0.0\"\n"
                     + "if [ \"$RUN_SCRIPT\" = \"server\" ] || [ \"$RUN_SCRIPT\" = \"start\" ]; then export PORT=\"$PORT\"; fi\n"
                     + "BASE_PATH=\"$BASE_PATH_ROOT\"\n"
-                    + "export BASE_PATH=\"$BASE_PATH\"\n"
                     // 对全栈/后端入口（start/server）：尽量走“生产模式”，避免 HTML 引用 /@vite/client、/src/* 等开发期绝对路径
                     + "if [ \"$RUN_SCRIPT\" = \"server\" ] || [ \"$RUN_SCRIPT\" = \"start\" ]; then\n"
                     + "  export NODE_ENV=production\n"
