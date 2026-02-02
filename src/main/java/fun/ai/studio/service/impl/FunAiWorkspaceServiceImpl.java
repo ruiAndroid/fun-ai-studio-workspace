@@ -1963,7 +1963,7 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
             if ("RUNNING".equalsIgnoreCase(cStatus)) {
                 log.info("停止容器以确保文件可以被删除: userId={}, appId={}, container={}", userId, appId, containerName);
                 // 停止容器（不删除，下次访问时会自动重启）
-                stopContainer(containerName);
+                docker("stop", containerName);
                 containerWasStopped = true;
                 // 等待容器完全停止
                 Thread.sleep(1000);
