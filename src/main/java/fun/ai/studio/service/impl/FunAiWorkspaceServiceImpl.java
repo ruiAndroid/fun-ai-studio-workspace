@@ -1920,23 +1920,35 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
         Path metaPath = hostRunDir.resolve("current.json");
         Path pidPath = hostRunDir.resolve("dev.pid");
 
-        // 1) 如果删除的是当前运行 app：尽量 stopRun（仅当容器在 RUNNING）
+        // 1) 关键修复：先停止整个容器，确保没有进程在访问文件
+        // 这样可以避免删除文件时出现"文件被占用"的问题
+        String containerName = containerName(userId);
+        boolean containerWasStopped = false;
+        try {
+            String cStatus = queryContainerStatus(containerName);
+            if ("RUNNING".equalsIgnoreCase(cStatus)) {
+                log.info("停止容器以确保文件可以被删除: userId={}, appId={}, container={}", userId, appId, containerName);
+                // 停止容器（不删除，下次访问时会自动重启）
+                stopContainer(containerName);
+                containerWasStopped = true;
+                // 等待容器完全停止
+                Thread.sleep(1000);
+            }
+        } catch (Exception e) {
+            log.warn("停止容器失败（继续尝试删除文件）: userId={}, appId={}, container={}, err={}", 
+                    userId, appId, containerName, e.getMessage());
+        }
+
+        // 2) 清理 run 元数据
         try {
             if (Files.exists(metaPath)) {
                 FunAiWorkspaceRunMeta meta = objectMapper.readValue(Files.readString(metaPath, StandardCharsets.UTF_8), FunAiWorkspaceRunMeta.class);
                 if (meta != null && meta.getAppId() != null && meta.getAppId().equals(appId)) {
-                    String containerName = containerName(userId);
-                    String cStatus = queryContainerStatus(containerName);
-                    if ("RUNNING".equalsIgnoreCase(cStatus)) {
-                        // 容器在跑：通过 stopRun 杀掉进程组并清理 run 文件
-                        stopRun(userId);
-                    } else {
-                        // 容器不在跑：仅清理宿主机 run 元数据
-                        try {
-                            Files.deleteIfExists(pidPath);
-                            Files.deleteIfExists(metaPath);
-                        } catch (Exception ignore) {
-                        }
+                    // 清理宿主机 run 元数据
+                    try {
+                        Files.deleteIfExists(pidPath);
+                        Files.deleteIfExists(metaPath);
+                    } catch (Exception ignore) {
                     }
                 }
             }
@@ -1973,8 +1985,8 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
             log.warn("cleanup run logs failed (best-effort): userId={}, appId={}, err={}", userId, appId, e.getMessage());
         }
 
-        // 3) 删除 workspace app 目录（宿主机持久化）
-        // node_modules 可能很大，且若仍有进程写入会导致 DirectoryNotEmpty。这里做“重试 + 失败隔离”，避免残留占用与后续误判。
+        // 4) 删除 workspace app 目录（宿主机持久化）
+        // 容器已停止，文件应该可以正常删除了。
         try {
             deleteDirBestEffort(hostAppDir, userId, appId);
         } catch (Exception e) {
@@ -1982,13 +1994,24 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
             log.warn("cleanup workspace app dir failed (best-effort): userId={}, appId={}, dir={}, err={}", userId, appId, hostAppDir, e.getMessage());
         }
 
-        // 4) 若用户级容器处于“坏状态”（典型：podman conmon died -> ExitCode=-1），则 best-effort 删除容器，
+        // 5) 重启容器（如果之前停止了）
+        // 这样用户的其他应用可以继续使用
+        if (containerWasStopped) {
+            try {
+                log.info("重启容器: userId={}, container={}", userId, containerName);
+                docker("start", containerName);
+            } catch (Exception e) {
+                log.warn("重启容器失败（用户下次访问时会自动重启）: userId={}, container={}, err={}", 
+                        userId, containerName, e.getMessage());
+            }
+        }
+        // 6) 若用户级容器处于“坏状态”（典型：podman conmon died -> ExitCode=-1），则 best-effort 删除容器，
         // 避免后续 ensure/start 因同名残留而反复失败；下次访问会自动重建。
         try {
-            String containerName = containerNameFromMetaOrDefault(hostUserDir, userId);
-            if (isContainerBroken(containerName)) {
-                log.warn("workspace container looks broken, remove best-effort: userId={}, name={}", userId, containerName);
-                tryRemoveContainer(containerName);
+            String checkContainerName = containerNameFromMetaOrDefault(hostUserDir, userId);
+            if (isContainerBroken(checkContainerName)) {
+                log.warn("workspace container looks broken, remove best-effort: userId={}, name={}", userId, checkContainerName);
+                tryRemoveContainer(checkContainerName);
             }
         } catch (Exception ignore) {
         }
