@@ -43,6 +43,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
@@ -62,6 +63,19 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
      */
     private static final Duration CMD_TIMEOUT = Duration.ofSeconds(30);
     private static final long MAX_TEXT_FILE_BYTES = 1024L * 1024L * 2L; // 2MB
+    private static final long PREVIEW_ROUTE_CACHE_TTL_MS = 10_000L;
+
+    private final Map<Long, PreviewRouteCacheEntry> previewRouteCache = new ConcurrentHashMap<>();
+
+    private static class PreviewRouteCacheEntry {
+        private final Long userId;
+        private final long expiresAt;
+
+        private PreviewRouteCacheEntry(Long userId, long expiresAt) {
+            this.userId = userId;
+            this.expiresAt = expiresAt;
+        }
+    }
 
     public FunAiWorkspaceServiceImpl(WorkspaceProperties props,
                                      CommandRunner commandRunner,
@@ -459,6 +473,7 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
                 + "}\n";
 
         String innerScript;
+        String previewBasePath = buildPreviewBasePath(appId);
         if ("BUILD".equals(op)) {
             innerScript = ""
                     + "set -e\n"
@@ -538,11 +553,12 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
                     + "PID_FILE='" + pidFile + "'\n"
                     + "META_FILE='" + metaFile + "'\n"
                     + "LOG_FILE='" + logFile + "'\n"
-                    // 注意：外部预览入口固定为 /ws/{userId}/，但 Nginx 方案 A 会“剥离 /ws/{userId} 前缀后转发到上游”。
-                    // - 对纯前端（vite dev/preview）：仍需要 base=/ws/{userId}/，保证浏览器请求的静态资源路径带 /ws 前缀
-                    // - 对后端（server/start）：不应要求项目支持 basePath，默认用 "/"（否则上游会在 /ws 下挂载导致访问 / 404）
-                    + "BASE_PATH_ROOT='/'\n"
+                    // 注意：外部预览入口固定为 /preview/{appId}/，但 Nginx 方案 A 会“剥离 /preview/{appId} 前缀后转发到上游”。
+                    // - 对纯前端（vite dev/preview）：仍需要 base=/preview/{appId}/，保证浏览器请求的静态资源路径带 /preview 前缀
+                    // - 对后端（server/start）：不应要求项目支持 basePath，默认用 "/"（否则上游会在 /preview 下挂载导致访问 / 404）
+                    + "BASE_PATH_ROOT='" + previewBasePath + "'\n"
                     + "RUN_SCRIPT='" + (selectedScript == null ? "start" : selectedScript.replace("'", "")) + "'\n"
+                    + "if [ \"$RUN_SCRIPT\" = \"server\" ] || [ \"$RUN_SCRIPT\" = \"start\" ]; then BASE_PATH_ROOT='/'; fi\n"
                     + "echo \"[preview] start at $(date -Is)\" >>\"$LOG_FILE\" 2>&1\n"
                     + "cd \"$APP_DIR\" >>\"$LOG_FILE\" 2>&1 || true\n"
                     + "if [ ! -f package.json ]; then\n"
@@ -827,7 +843,7 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
         }
         FunAiWorkspaceRunStatusResponse status = getRunStatus(userId);
         if (status.getMessage() == null || status.getMessage().isBlank()) {
-            status.setMessage("已触发启动(" + op + ")，请轮询 /run/status 或通过 SSE /realtime/events 查看日志与状态");
+            status.setMessage("已触发启动(" + op + ")，请轮询 /run/status 查看状态");
         }
         return status;
     }
@@ -991,7 +1007,7 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
                 String s = alive.getOutput() == null ? "" : alive.getOutput().trim();
                 if (s.contains("RUNNING")) {
                     resp.setState("RUNNING");
-                    resp.setPreviewUrl(buildPreviewUrl(ws));
+                    resp.setPreviewUrl(buildPreviewUrl(meta == null ? null : meta.getAppId()));
                 } else if (s.contains("STARTING")) {
                     resp.setState("STARTING");
                 } else {
@@ -1198,7 +1214,7 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
         }
     }
 
-    private String buildPreviewUrl(FunAiWorkspaceInfoResponse ws) {
+    private String buildPreviewUrl(Long appId) {
         String base = props.getPreviewBaseUrl();
         if (base == null) return null;
         base = base.trim();
@@ -1220,8 +1236,26 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
         if (prefix.endsWith("/")) {
             prefix = prefix.substring(0, prefix.length() - 1);
         }
-        if (ws.getUserId() == null) return null;
-        return base + prefix + "/" + ws.getUserId() + "/";
+        if (appId == null) return null;
+        return base + prefix + "/" + appId + "/";
+    }
+
+    private String buildPreviewBasePath(Long appId) {
+        String prefix = props.getPreviewPathPrefix();
+        if (prefix == null || prefix.isBlank()) {
+            prefix = "/preview";
+        }
+        prefix = prefix.trim();
+        if (!prefix.startsWith("/")) {
+            prefix = "/" + prefix;
+        }
+        if (prefix.endsWith("/")) {
+            prefix = prefix.substring(0, prefix.length() - 1);
+        }
+        if (appId == null) {
+            return "/";
+        }
+        return prefix + "/" + appId + "/";
     }
 
     @Override
@@ -2245,6 +2279,50 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
         WorkspaceMeta meta = tryLoadMeta(hostUserDir);
         if (meta == null) return null;
         return meta.getHostPort();
+    }
+
+    /**
+     * 仅用于 nginx auth_request：根据 appId 反查 userId（只看当前运行的 appId）。
+     */
+    public Long resolveUserIdByAppId(Long appId) {
+        if (appId == null) return null;
+        long now = System.currentTimeMillis();
+        PreviewRouteCacheEntry cached = previewRouteCache.get(appId);
+        if (cached != null && cached.expiresAt >= now) {
+            return cached.userId;
+        }
+        Long userId = scanUserIdByAppId(appId);
+        if (userId == null) {
+            previewRouteCache.remove(appId);
+            return null;
+        }
+        previewRouteCache.put(appId, new PreviewRouteCacheEntry(userId, now + PREVIEW_ROUTE_CACHE_TTL_MS));
+        return userId;
+    }
+
+    private Long scanUserIdByAppId(Long appId) {
+        if (appId == null || !StringUtils.hasText(props.getHostRoot())) return null;
+        Path root = Paths.get(props.getHostRoot().trim().replaceAll("^[\"']|[\"']$", ""));
+        if (Files.notExists(root) || !Files.isDirectory(root)) return null;
+        try (var s = Files.list(root)) {
+            for (Path p : (Iterable<Path>) s::iterator) {
+                if (p == null || !Files.isDirectory(p)) continue;
+                String name = p.getFileName().toString();
+                if (!name.matches("\\d+")) continue;
+                Path metaPath = p.resolve("run").resolve("current.json");
+                if (Files.notExists(metaPath)) continue;
+                FunAiWorkspaceRunMeta meta = objectMapper.readValue(Files.readString(metaPath, StandardCharsets.UTF_8), FunAiWorkspaceRunMeta.class);
+                if (meta != null && appId.equals(meta.getAppId())) {
+                    String type = meta.getType() == null ? "" : meta.getType().trim().toUpperCase();
+                    if (!"START".equals(type) && !"DEV".equals(type)) {
+                        continue;
+                    }
+                    return Long.parseLong(name);
+                }
+            }
+        } catch (Exception ignore) {
+        }
+        return null;
     }
 
     private void persistMeta(Path hostUserDir, WorkspaceMeta meta) {

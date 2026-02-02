@@ -49,15 +49,15 @@ public class WorkspaceProperties {
      * - https://preview.example.com
      *
      * 推荐配合 nginx 反代（只开 80/443）：最终 previewUrl 形如
-     * {previewBaseUrl}{previewPathPrefix}/{userId}/
+     * {previewBaseUrl}{previewPathPrefix}/{appId}/
      */
     private String previewBaseUrl;
 
     /**
-     * nginx 反代预览的路径前缀（不以 / 结尾），默认 /ws
-     * 最终会拼接为 {previewBaseUrl}{previewPathPrefix}/{userId}/
+     * nginx 反代预览的路径前缀（不以 / 结尾），默认 /preview
+     * 最终会拼接为 {previewBaseUrl}{previewPathPrefix}/{appId}/
      */
-    private String previewPathPrefix = "/ws";
+    private String previewPathPrefix = "/preview";
 
     /**
      * nginx auth_request 调用内部端口查询接口的共享密钥（强烈建议配置）
