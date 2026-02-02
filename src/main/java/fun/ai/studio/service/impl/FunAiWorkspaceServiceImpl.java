@@ -473,7 +473,6 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
                 + "}\n";
 
         String innerScript;
-        String previewBasePath = buildPreviewBasePath(appId);
         if ("BUILD".equals(op)) {
             innerScript = ""
                     + "set -e\n"
@@ -553,12 +552,9 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
                     + "PID_FILE='" + pidFile + "'\n"
                     + "META_FILE='" + metaFile + "'\n"
                     + "LOG_FILE='" + logFile + "'\n"
-                    // 注意：外部预览入口固定为 /preview/{appId}/，但 Nginx 方案 A 会“剥离 /preview/{appId} 前缀后转发到上游”。
-                    // - 对纯前端（vite dev/preview）：仍需要 base=/preview/{appId}/，保证浏览器请求的静态资源路径带 /preview 前缀
-                    // - 对后端（server/start）：不应要求项目支持 basePath，默认用 "/"（否则上游会在 /preview 下挂载导致访问 / 404）
-                    + "BASE_PATH_ROOT='" + previewBasePath + "'\n"
+                    // 注意：外部预览入口固定为 /preview/{appId}/，Nginx 会剥离前缀后转发到上游。
+                    // 为避免 Vite base 导致 / -> /preview/... 的 302 循环，这里不注入 --base。
                     + "RUN_SCRIPT='" + (selectedScript == null ? "start" : selectedScript.replace("'", "")) + "'\n"
-                    + "if [ \"$RUN_SCRIPT\" = \"server\" ] || [ \"$RUN_SCRIPT\" = \"start\" ]; then BASE_PATH_ROOT='/'; fi\n"
                     + "echo \"[preview] start at $(date -Is)\" >>\"$LOG_FILE\" 2>&1\n"
                     + "cd \"$APP_DIR\" >>\"$LOG_FILE\" 2>&1 || true\n"
                     + "if [ ! -f package.json ]; then\n"
@@ -579,7 +575,6 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
                     // - start/server：通常是后端入口，需要 PORT=5173 以匹配网关转发
                     + "export HOST=\"0.0.0.0\"\n"
                     + "if [ \"$RUN_SCRIPT\" = \"server\" ] || [ \"$RUN_SCRIPT\" = \"start\" ]; then export PORT=\"$PORT\"; fi\n"
-                    + "BASE_PATH=\"$BASE_PATH_ROOT\"\n"
                     // 对全栈/后端入口（start/server）：尽量走“生产模式”，避免 HTML 引用 /@vite/client、/src/* 等开发期绝对路径
                     + "if [ \"$RUN_SCRIPT\" = \"server\" ] || [ \"$RUN_SCRIPT\" = \"start\" ]; then\n"
                     + "  export NODE_ENV=production\n"
@@ -618,7 +613,7 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
                     + (props.getMongo() != null && props.getMongo().isEnabled()
                     ? props.getMongo().generateMongoEnvVars(appId)
                     : "")
-                    + "echo \"[preview] npm run $RUN_SCRIPT on $PORT base=$BASE_PATH\" >>\"$LOG_FILE\" 2>&1\n"
+                    + "echo \"[preview] npm run $RUN_SCRIPT on $PORT\" >>\"$LOG_FILE\" 2>&1\n"
                     + "TARGET_PORT_HEX=$(printf '%04X' \"$PORT\")\n"
                     + "inode=$(awk -v p=\":$TARGET_PORT_HEX\" 'toupper($2) ~ (p\"$\") && $4==\"0A\" {print $10; exit}' /proc/net/tcp 2>/dev/null || true)\n"
                     + "if [ -z \"$inode\" ]; then inode=$(awk -v p=\":$TARGET_PORT_HEX\" 'toupper($2) ~ (p\"$\") && $4==\"0A\" {print $10; exit}' /proc/net/tcp6 2>/dev/null || true); fi\n"
@@ -645,7 +640,7 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
                     + "if [ \"$RUN_SCRIPT\" = \"preview\" ] || [ \"$RUN_SCRIPT\" = \"dev\" ]; then\n"
                     + "  script_line=$(node -p \"try{const s=require('./package.json').scripts||{}; s['$RUN_SCRIPT']||''}catch(e){''}\" 2>/dev/null || true)\n"
                     + "  # 如果脚本本身是 vite（而不是 concurrently/自定义 runner），才追加 --host/--port/--base 参数\n"
-                    + "  echo \"$script_line\" | grep -qi \"\\bvite\\b\" && cmd=\"npm run $RUN_SCRIPT -- --host 0.0.0.0 --port $PORT --strictPort --base $BASE_PATH\" || true\n"
+                    + "  echo \"$script_line\" | grep -qi \"\\bvite\\b\" && cmd=\"npm run $RUN_SCRIPT -- --host 0.0.0.0 --port $PORT --strictPort\" || true\n"
                     + "\n"
                     + "  # 兼容全栈项目常见写法：dev=concurrently \"npm run dev:client\" \"npm run dev:server\"\n"
                     + "  # 或 dev=concurrently \"npm run client\" \"npm run server:dev\"\n"
@@ -657,11 +652,11 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
                     + "    has_server_dev=$(node -p \"try{const s=require('./package.json').scripts||{}; s['server:dev']? '1':'0'}catch(e){'0'}\" 2>/dev/null || echo 0)\n"
                     + "    if echo \"$client_line\" | grep -qi \"\\bvite\\b\"; then\n"
                     + "      if [ \"$has_dev_server\" = \"1\" ]; then\n"
-                    + "        cmd=\"sh -c 'npm run dev:client -- --host 0.0.0.0 --port $PORT --strictPort --base $BASE_PATH & npm run dev:server; wait'\"\n"
+                    + "        cmd=\"sh -c 'npm run dev:client -- --host 0.0.0.0 --port $PORT --strictPort & npm run dev:server; wait'\"\n"
                     + "      elif [ \"$has_server_dev\" = \"1\" ]; then\n"
-                    + "        cmd=\"sh -c 'npm run client -- --host 0.0.0.0 --port $PORT --strictPort --base $BASE_PATH & npm run server:dev; wait'\"\n"
+                    + "        cmd=\"sh -c 'npm run client -- --host 0.0.0.0 --port $PORT --strictPort & npm run server:dev; wait'\"\n"
                     + "      else\n"
-                    + "        if [ -n \"$client_script\" ]; then cmd=\"npm run $client_script -- --host 0.0.0.0 --port $PORT --strictPort --base $BASE_PATH\"; fi\n"
+                    + "        if [ -n \"$client_script\" ]; then cmd=\"npm run $client_script -- --host 0.0.0.0 --port $PORT --strictPort\"; fi\n"
                     + "      fi\n"
                     + "    fi\n"
                     + "  fi\n"
@@ -1239,24 +1234,6 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
         }
         if (appId == null) return null;
         return base + prefix + "/" + appId + "/";
-    }
-
-    private String buildPreviewBasePath(Long appId) {
-        String prefix = props.getPreviewPathPrefix();
-        if (prefix == null || prefix.isBlank()) {
-            prefix = "/preview";
-        }
-        prefix = prefix.trim();
-        if (!prefix.startsWith("/")) {
-            prefix = "/" + prefix;
-        }
-        if (prefix.endsWith("/")) {
-            prefix = prefix.substring(0, prefix.length() - 1);
-        }
-        if (appId == null) {
-            return "/";
-        }
-        return prefix + "/" + appId + "/";
     }
 
     @Override
