@@ -1222,12 +1222,14 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
         if (base.endsWith("/")) {
             base = base.substring(0, base.length() - 1);
         }
-        if (!base.contains("://")) {
-            base = "http://" + base;
+        if (base.startsWith("http://")) {
+            base = "https://" + base.substring("http://".length());
+        } else if (!base.contains("://")) {
+            base = "https://" + base;
         }
         String prefix = props.getPreviewPathPrefix();
         if (prefix == null || prefix.isBlank()) {
-            prefix = "/ws";
+            prefix = "/preview";
         }
         prefix = prefix.trim();
         if (!prefix.startsWith("/")) {
