@@ -7,10 +7,13 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 import java.io.IOException;
+import java.nio.file.FileVisitResult;
+import java.nio.file.SimpleFileVisitor;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.List;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -156,8 +159,14 @@ public class OrphanedDataCleanupService {
                     Long appId = Long.parseLong(dirName);
                     if (!existingAppIds.contains(appId)) {
                         log.info("清理孤立应用目录: appId={}, path={}", appId, appDir);
-                        deleteDirectoryRecursively(appDir);
-                        cleaned++;
+                        try {
+                            deleteDirectoryRecursively(appDir);
+                            cleaned++;
+                        } catch (Exception e) {
+                            // 单个目录失败不影响继续清理其它目录（避免“一个坏目录”导致整批孤立目录永久残留）
+                            log.warn("清理孤立应用目录失败（best-effort，继续处理下一个）: appId={}, path={}, err={}",
+                                    appId, appDir, e.getMessage());
+                        }
                     }
                 } catch (NumberFormatException e) {
                     log.debug("跳过非数字目录: {}", dirName);
@@ -247,16 +256,32 @@ public class OrphanedDataCleanupService {
      * 递归删除目录
      */
     private void deleteDirectoryRecursively(Path dir) throws IOException {
-        if (!Files.exists(dir)) return;
+        if (dir == null) return;
+        if (Files.notExists(dir)) return;
 
-        if (Files.isDirectory(dir)) {
-            try (DirectoryStream<Path> entries = Files.newDirectoryStream(dir)) {
-                for (Path entry : entries) {
-                    deleteDirectoryRecursively(entry);
-                }
+        // 关键：不要跟随符号链接（node_modules/.bin 中大量是 symlink）。
+        // 若跟随，会尝试删除 link 目标目录，但 link 本身仍留在 .bin 中，最终导致 DirectoryNotEmptyException。
+        Files.walkFileTree(dir, new SimpleFileVisitor<>() {
+            @Override
+            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+                Files.deleteIfExists(file);
+                return FileVisitResult.CONTINUE;
             }
-        }
-        Files.delete(dir);
+
+            @Override
+            public FileVisitResult visitFileFailed(Path file, IOException exc) throws IOException {
+                // best-effort：尽量删掉（包含权限/竞态场景）
+                Files.deleteIfExists(file);
+                return FileVisitResult.CONTINUE;
+            }
+
+            @Override
+            public FileVisitResult postVisitDirectory(Path d, IOException exc) throws IOException {
+                if (exc != null) throw exc;
+                Files.deleteIfExists(d);
+                return FileVisitResult.CONTINUE;
+            }
+        });
     }
 
     /**
