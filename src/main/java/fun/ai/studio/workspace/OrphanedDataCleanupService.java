@@ -132,9 +132,23 @@ public class OrphanedDataCleanupService {
 
                 String dirName = appDir.getFileName().toString();
                 
-                // 跳过隔离目录（.deleted-* 后缀）
+                // 隔离目录：{appId}.deleted-<ts>
+                // - 该目录通常来自 delete 时删除失败的 Quarantine（避免原 apps/{appId} 长期残留）
+                // - 若 appId 已不存在，则可以安全回收
                 if (dirName.contains(".deleted-")) {
-                    log.debug("跳过隔离目录: {}", appDir);
+                    String prefix = dirName.substring(0, dirName.indexOf(".deleted-"));
+                    try {
+                        Long appId = Long.parseLong(prefix);
+                        if (!existingAppIds.contains(appId)) {
+                            log.info("清理孤立隔离应用目录: appId={}, path={}", appId, appDir);
+                            deleteDirectoryRecursively(appDir);
+                            cleaned++;
+                        } else {
+                            log.debug("跳过隔离目录（app 仍存在）: appId={}, path={}", appId, appDir);
+                        }
+                    } catch (NumberFormatException e) {
+                        log.debug("跳过隔离目录（无法解析 appId 前缀）: {}", appDir);
+                    }
                     continue;
                 }
 
