@@ -1,7 +1,7 @@
 package fun.ai.studio.entity.response;
 
 /**
- * /api/fun-ai/workspace/git/restore 响应
+ * /api/fun-ai/workspace/git/reset 响应
  */
 public class WorkspaceGitRestoreResponse {
     /**
