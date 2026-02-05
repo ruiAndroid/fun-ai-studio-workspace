@@ -38,6 +38,7 @@ import java.nio.file.StandardOpenOption;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -2301,6 +2302,101 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
         } catch (Exception ignore) {
         }
         return null;
+    }
+
+    /**
+     * 运行态容量快照（不触发 ensure/start；仅扫描当前节点宿主机目录）。
+     */
+    public Map<String, Object> runCapacitySnapshot(Long userId) {
+        Map<String, Object> out = new HashMap<>();
+        long busyCount = 0L;
+        boolean userBusy = false;
+
+        if (props == null || !props.isEnabled() || !StringUtils.hasText(props.getHostRoot())) {
+            out.put("busyCount", 0L);
+            out.put("userBusy", false);
+            return out;
+        }
+
+        Path root = Paths.get(sanitizePath(props.getHostRoot()));
+        if (Files.notExists(root) || !Files.isDirectory(root)) {
+            out.put("busyCount", 0L);
+            out.put("userBusy", false);
+            return out;
+        }
+
+        try (var s = Files.list(root)) {
+            for (Path p : (Iterable<Path>) s::iterator) {
+                if (p == null || !Files.isDirectory(p)) continue;
+                String name = p.getFileName().toString();
+                if (!name.matches("\\d+")) continue;
+                Long uid;
+                try {
+                    uid = Long.parseLong(name);
+                } catch (Exception ignore) {
+                    continue;
+                }
+                boolean busy = isUserRunBusy(p, uid);
+                if (busy) {
+                    busyCount++;
+                    if (userId != null && userId.equals(uid)) {
+                        userBusy = true;
+                    }
+                }
+            }
+        } catch (Exception ignore) {
+        }
+
+        out.put("busyCount", busyCount);
+        out.put("userBusy", userBusy);
+        return out;
+    }
+
+    private boolean isUserRunBusy(Path userDir, Long userId) {
+        if (userDir == null || userId == null) return false;
+        Path metaPath = userDir.resolve("run").resolve("current.json");
+        if (Files.notExists(metaPath)) return false;
+        FunAiWorkspaceRunMeta meta;
+        try {
+            meta = objectMapper.readValue(Files.readString(metaPath, StandardCharsets.UTF_8), FunAiWorkspaceRunMeta.class);
+        } catch (Exception ignore) {
+            return false;
+        }
+        if (meta == null || meta.getType() == null) return false;
+        String type = meta.getType().trim().toUpperCase();
+        String containerName = containerNameFromMetaOrDefault(userDir, userId);
+        if (!StringUtils.hasText(containerName)) return false;
+
+        String cStatus = queryContainerStatus(containerName);
+        if (!"RUNNING".equalsIgnoreCase(cStatus)) return false;
+
+        Long pid = meta.getPid();
+        if (pid == null) {
+            if ("BUILD".equals(type) || "INSTALL".equals(type)) {
+                return meta.getExitCode() == null && meta.getFinishedAt() == null;
+            }
+            return true; // STARTING（DEV/START）
+        }
+
+        return isProcessAliveInContainer(containerName, pid);
+    }
+
+    private boolean isProcessAliveInContainer(String containerName, Long pid) {
+        if (!StringUtils.hasText(containerName) || pid == null) return false;
+        String check = ""
+                + "pid=" + pid + "\n"
+                + "if kill -0 \"$pid\" 2>/dev/null; then\n"
+                + "  echo RUNNING\n"
+                + "else\n"
+                + "  echo DEAD\n"
+                + "fi\n";
+        try {
+            CommandResult alive = docker("exec", containerName, "bash", "-lc", check);
+            String s = alive.getOutput() == null ? "" : alive.getOutput().trim();
+            return s.contains("RUNNING");
+        } catch (Exception ignore) {
+            return false;
+        }
     }
 
     private void persistMeta(Path hostUserDir, WorkspaceMeta meta) {

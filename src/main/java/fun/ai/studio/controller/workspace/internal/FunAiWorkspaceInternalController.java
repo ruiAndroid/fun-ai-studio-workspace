@@ -19,6 +19,8 @@ import org.springframework.web.bind.annotation.RestController;
 
 import jakarta.servlet.http.HttpServletRequest;
 
+import java.util.Map;
+
 /**
  * 内部接口：仅供 nginx auth_request 使用
  */
@@ -107,6 +109,20 @@ public class FunAiWorkspaceInternalController {
         } catch (Exception e) {
             log.warn("cleanup workspace on app deleted failed: userId={}, appId={}, err={}", userId, appId, e.getMessage());
             return Result.error(500, "cleanup failed: " + e.getMessage());
+        }
+    }
+
+    @GetMapping("/run/busy-count")
+    @Operation(summary = "（内部）当前节点运行态占用数量", description = "返回 RUNNING/STARTING/BUILDING/INSTALLING 的占用数，以及指定 userId 是否已在运行。")
+    public Result<Map<String, Object>> runBusyCount(
+            @Parameter(description = "用户ID（用于判定是否已在运行）", required = true) @RequestParam Long userId
+    ) {
+        try {
+            Map<String, Object> out = workspaceServiceImpl.runCapacitySnapshot(userId);
+            return Result.success(out);
+        } catch (Exception e) {
+            log.warn("run busy count failed: userId={}, err={}", userId, e.getMessage());
+            return Result.error(500, "run busy count failed: " + e.getMessage());
         }
     }
 }
