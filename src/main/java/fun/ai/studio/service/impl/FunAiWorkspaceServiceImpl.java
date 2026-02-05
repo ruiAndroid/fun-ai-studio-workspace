@@ -45,6 +45,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Supplier;
 
 @Service
 public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
@@ -67,6 +69,7 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
     private static final long PREVIEW_ROUTE_CACHE_TTL_MS = 10_000L;
 
     private final Map<Long, PreviewRouteCacheEntry> previewRouteCache = new ConcurrentHashMap<>();
+    private final Map<Long, ReentrantLock> userLocks = new ConcurrentHashMap<>();
 
     private static class PreviewRouteCacheEntry {
         private final Long userId;
@@ -90,6 +93,29 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
         this.workspaceMongoShellClient = workspaceMongoShellClient;
         this.activityTracker = activityTracker;
         this.curlCommandValidator = curlCommandValidator;
+    }
+
+    private ReentrantLock userLock(Long userId) {
+        return userLocks.computeIfAbsent(userId, k -> new ReentrantLock());
+    }
+
+    private <T> T withUserLock(Long userId, Supplier<T> supplier) {
+        if (userId == null || supplier == null) return supplier == null ? null : supplier.get();
+        ReentrantLock lock = userLock(userId);
+        lock.lock();
+        try {
+            return supplier.get();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private void withUserLock(Long userId, Runnable action) {
+        if (action == null) return;
+        withUserLock(userId, () -> {
+            action.run();
+            return null;
+        });
     }
 
     @Override
@@ -1924,110 +1950,112 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
         if (userId == null || appId == null) return;
         if (props == null || !props.isEnabled()) return;
         if (!StringUtils.hasText(props.getHostRoot())) return;
+        withUserLock(userId, () -> {
+            Path hostUserDir = resolveHostWorkspaceDir(userId);
+            Path hostAppsDir = hostUserDir.resolve("apps");
+            // 应用目录结构：{hostRoot}/{userId}/apps/{appId}
+            Path hostAppDir = hostAppsDir.resolve(String.valueOf(appId));
+            Path hostRunDir = hostUserDir.resolve("run");
+            Path metaPath = hostRunDir.resolve("current.json");
+            Path pidPath = hostRunDir.resolve("dev.pid");
 
-        Path hostUserDir = resolveHostWorkspaceDir(userId);
-        Path hostAppsDir = hostUserDir.resolve("apps");
-        // 应用目录结构：{hostRoot}/{userId}/apps/{appId}
-        Path hostAppDir = hostAppsDir.resolve(String.valueOf(appId));
-        Path hostRunDir = hostUserDir.resolve("run");
-        Path metaPath = hostRunDir.resolve("current.json");
-        Path pidPath = hostRunDir.resolve("dev.pid");
-
-        // 1) 关键修复：先停止整个容器，确保没有进程在访问文件
-        // 这样可以避免删除文件时出现"文件被占用"的问题
-        String containerName = containerName(userId);
-        boolean containerWasStopped = false;
-        try {
-            String cStatus = queryContainerStatus(containerName);
-            if ("RUNNING".equalsIgnoreCase(cStatus)) {
-                log.info("停止容器以确保文件可以被删除: userId={}, appId={}, container={}", userId, appId, containerName);
-                // 停止容器（不删除，下次访问时会自动重启）
-                docker("stop", containerName);
-                containerWasStopped = true;
-                // 等待容器完全停止
-                Thread.sleep(1000);
+            // 1) 关键修复：先停止整个容器，确保没有进程在访问文件
+            // 这样可以避免删除文件时出现"文件被占用"的问题
+            String containerName = containerName(userId);
+            boolean containerWasStopped = false;
+            try {
+                String cStatus = queryContainerStatus(containerName);
+                if ("RUNNING".equalsIgnoreCase(cStatus)) {
+                    log.info("停止容器以确保文件可以被删除: userId={}, appId={}, container={}", userId, appId, containerName);
+                    // 停止容器（不删除，下次访问时会自动重启）
+                    docker("stop", containerName);
+                    containerWasStopped = true;
+                    // 等待容器完全停止
+                    waitForContainerNotStopping(containerName, 6, 500);
+                }
+            } catch (Exception e) {
+                log.warn("停止容器失败（继续尝试删除文件）: userId={}, appId={}, container={}, err={}",
+                        userId, appId, containerName, e.getMessage());
             }
-        } catch (Exception e) {
-            log.warn("停止容器失败（继续尝试删除文件）: userId={}, appId={}, container={}, err={}", 
-                    userId, appId, containerName, e.getMessage());
-        }
 
-        // 2) 清理 run 元数据
-        try {
-            if (Files.exists(metaPath)) {
-                FunAiWorkspaceRunMeta meta = objectMapper.readValue(Files.readString(metaPath, StandardCharsets.UTF_8), FunAiWorkspaceRunMeta.class);
-                if (meta != null && meta.getAppId() != null && meta.getAppId().equals(appId)) {
-                    // 清理宿主机 run 元数据
-                    try {
-                        Files.deleteIfExists(pidPath);
-                        Files.deleteIfExists(metaPath);
-                    } catch (Exception ignore) {
+            // 2) 清理 run 元数据
+            try {
+                if (Files.exists(metaPath)) {
+                    FunAiWorkspaceRunMeta meta = objectMapper.readValue(Files.readString(metaPath, StandardCharsets.UTF_8), FunAiWorkspaceRunMeta.class);
+                    if (meta != null && meta.getAppId() != null && meta.getAppId().equals(appId)) {
+                        // 清理宿主机 run 元数据
+                        try {
+                            Files.deleteIfExists(pidPath);
+                            Files.deleteIfExists(metaPath);
+                        } catch (Exception ignore) {
+                        }
                     }
                 }
+            } catch (Exception e) {
+                // 清理失败不阻断删除流程
+                log.warn("cleanup workspace run meta failed: userId={}, appId={}, err={}", userId, appId, e.getMessage());
             }
-        } catch (Exception e) {
-            // 清理失败不阻断删除流程
-            log.warn("cleanup workspace run meta failed: userId={}, appId={}, err={}", userId, appId, e.getMessage());
-        }
 
-        // 2) 删除 MongoDB 数据库（88 服务器上的独立数据库）
-        if (props.getMongo() != null && props.getMongo().isEnabled()) {
-            try {
-                String dbName = props.getMongo().generateDbName(appId);
-                log.info("删除 MongoDB 数据库: userId={}, appId={}, dbName={}", userId, appId, dbName);
-                
-                // 直接从 87 服务器连接到 88 服务器删除数据库（不依赖用户容器）
-                boolean dropped = workspaceMongoShellClient.dropDatabase(dbName);
-                if (dropped) {
-                    log.info("成功删除 MongoDB 数据库: dbName={}", dbName);
-                } else {
-                    log.warn("删除 MongoDB 数据库失败（可能不存在）: dbName={}", dbName);
+            // 2) 删除 MongoDB 数据库（88 服务器上的独立数据库）
+            if (props.getMongo() != null && props.getMongo().isEnabled()) {
+                try {
+                    String dbName = props.getMongo().generateDbName(appId);
+                    log.info("删除 MongoDB 数据库: userId={}, appId={}, dbName={}", userId, appId, dbName);
+
+                    // 直接从 87 服务器连接到 88 服务器删除数据库（不依赖用户容器）
+                    boolean dropped = workspaceMongoShellClient.dropDatabase(dbName);
+                    if (dropped) {
+                        log.info("成功删除 MongoDB 数据库: dbName={}", dbName);
+                    } else {
+                        log.warn("删除 MongoDB 数据库失败（可能不存在）: dbName={}", dbName);
+                    }
+                } catch (Exception e) {
+                    // MongoDB 删除失败不阻断应用删除流程
+                    log.warn("删除 MongoDB 数据库失败: userId={}, appId={}, err={}", userId, appId, e.getMessage(), e);
                 }
-            } catch (Exception e) {
-                // MongoDB 删除失败不阻断应用删除流程
-                log.warn("删除 MongoDB 数据库失败: userId={}, appId={}, err={}", userId, appId, e.getMessage(), e);
             }
-        }
 
-        // 3) 删除该 appId 对应的历史 run 日志（避免 run 目录无限累积）
-        // 日志命名约定：run/run-{type}-{appId}-{timestamp}.log
-        try {
-            cleanupRunLogsForApp(hostRunDir, userId, appId);
-        } catch (Exception e) {
-            // 清理 run 日志失败不阻断应用删除流程
-            log.warn("cleanup run logs failed (best-effort): userId={}, appId={}, err={}", userId, appId, e.getMessage());
-        }
-
-        // 4) 删除 workspace app 目录（宿主机持久化）
-        // 容器已停止，文件应该可以正常删除了。
-        try {
-            deleteDirBestEffort(hostAppDir, userId, appId);
-        } catch (Exception e) {
-            // 清理应用目录失败不阻断应用删除流程
-            log.warn("cleanup workspace app dir failed (best-effort): userId={}, appId={}, dir={}, err={}", userId, appId, hostAppDir, e.getMessage());
-        }
-
-        // 5) 重启容器（如果之前停止了）
-        // 这样用户的其他应用可以继续使用
-        if (containerWasStopped) {
+            // 3) 删除该 appId 对应的历史 run 日志（避免 run 目录无限累积）
+            // 日志命名约定：run/run-{type}-{appId}-{timestamp}.log
             try {
-                log.info("重启容器: userId={}, container={}", userId, containerName);
-                docker("start", containerName);
+                cleanupRunLogsForApp(hostRunDir, userId, appId);
             } catch (Exception e) {
-                log.warn("重启容器失败（用户下次访问时会自动重启）: userId={}, container={}, err={}", 
-                        userId, containerName, e.getMessage());
+                // 清理 run 日志失败不阻断应用删除流程
+                log.warn("cleanup run logs failed (best-effort): userId={}, appId={}, err={}", userId, appId, e.getMessage());
             }
-        }
-        // 6) 若用户级容器处于“坏状态”（典型：podman conmon died -> ExitCode=-1），则 best-effort 删除容器，
-        // 避免后续 ensure/start 因同名残留而反复失败；下次访问会自动重建。
-        try {
-            String checkContainerName = containerNameFromMetaOrDefault(hostUserDir, userId);
-            if (isContainerBroken(checkContainerName)) {
-                log.warn("workspace container looks broken, remove best-effort: userId={}, name={}", userId, checkContainerName);
-                tryRemoveContainer(checkContainerName);
+
+            // 4) 删除 workspace app 目录（宿主机持久化）
+            // 容器已停止，文件应该可以正常删除了。
+            try {
+                deleteDirBestEffort(hostAppDir, userId, appId);
+            } catch (Exception e) {
+                // 清理应用目录失败不阻断应用删除流程
+                log.warn("cleanup workspace app dir failed (best-effort): userId={}, appId={}, dir={}, err={}", userId, appId, hostAppDir, e.getMessage());
             }
-        } catch (Exception ignore) {
-        }
+
+            // 5) 重启容器（如果之前停止了）
+            // 这样用户的其他应用可以继续使用
+            if (containerWasStopped) {
+                try {
+                    log.info("重启容器: userId={}, container={}", userId, containerName);
+                    WorkspaceMeta meta = loadOrInitMeta(userId, hostUserDir);
+                    ensureContainerRunning(userId, hostUserDir, meta);
+                } catch (Exception e) {
+                    log.warn("重启容器失败（用户下次访问时会自动重启）: userId={}, container={}, err={}",
+                            userId, containerName, e.getMessage());
+                }
+            }
+            // 6) 若用户级容器处于“坏状态”（典型：podman conmon died -> ExitCode=-1），则 best-effort 删除容器，
+            // 避免后续 ensure/start 因同名残留而反复失败；下次访问会自动重建。
+            try {
+                String checkContainerName = containerNameFromMetaOrDefault(hostUserDir, userId);
+                if (isContainerBroken(checkContainerName)) {
+                    log.warn("workspace container looks broken, remove best-effort: userId={}, name={}", userId, checkContainerName);
+                    tryRemoveContainer(checkContainerName);
+                }
+            } catch (Exception ignore) {
+            }
+        });
     }
 
     private void cleanupRunLogsForApp(Path hostRunDir, Long userId, Long appId) {
@@ -2437,12 +2465,23 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
     }
 
     private void ensureContainerRunning(Long userId, Path hostUserDir, WorkspaceMeta meta) {
+        if (userId == null) {
+            ensureContainerRunningInternal(null, hostUserDir, meta);
+            return;
+        }
+        withUserLock(userId, () -> ensureContainerRunningInternal(userId, hostUserDir, meta));
+    }
+
+    private void ensureContainerRunningInternal(Long userId, Path hostUserDir, WorkspaceMeta meta) {
         String name = meta.getContainerName();
         String networkName = props.getNetworkName();
         // Ensure we can pull private registry images (Harbor/ACR) before any container (re)create.
         ensureRegistryLogin(meta.getImage());
 
         String status = queryContainerStatus(name);
+        if ("STOPPING".equalsIgnoreCase(status)) {
+            status = waitForContainerNotStopping(name, 6, 500);
+        }
         // 镜像升级：若容器当前镜像与 meta 期望镜像不一致，则重建容器（确保新镜像能力生效，例如 mongosh）
         if (!"NOT_CREATED".equalsIgnoreCase(status)) {
             try {
@@ -2499,6 +2538,10 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
             // start 失败时（podman/docker 都可能发生），不要直接 docker run（会因为同名容器残留而失败）
             // 这里尽量清理同名容器后再重建。
             tryRemoveContainer(name);
+            status = queryContainerStatus(name);
+            if ("STOPPING".equalsIgnoreCase(status)) {
+                status = waitForContainerNotStopping(name, 6, 500);
+            }
         }
 
         // 不存在：创建并启动（长驻）
@@ -2855,6 +2898,29 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
         if (s.isEmpty()) return "UNKNOWN";
         if ("running".equalsIgnoreCase(s)) return "RUNNING";
         return s.toUpperCase();
+    }
+
+    private String waitForContainerNotStopping(String containerName, int maxAttempts, long sleepMs) {
+        String last = "STOPPING";
+        int attempts = Math.max(1, maxAttempts);
+        long delay = Math.max(100L, sleepMs);
+        for (int i = 0; i < attempts; i++) {
+            last = queryContainerStatus(containerName);
+            if (!"STOPPING".equalsIgnoreCase(last)) {
+                return last;
+            }
+            try {
+                Thread.sleep(delay);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return last;
+            }
+        }
+        if ("STOPPING".equalsIgnoreCase(last)) {
+            tryRemoveContainer(containerName);
+            last = queryContainerStatus(containerName);
+        }
+        return last;
     }
 
     /**
