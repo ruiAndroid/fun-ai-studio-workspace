@@ -119,9 +119,11 @@ public class FunAiWorkspaceRealtimeLogController {
     }
 
     private boolean isBuildFinished(FunAiWorkspaceRunMeta meta, Long appId) {
-        if (meta == null || appId == null) return false;
-        if (meta.getAppId() == null || !meta.getAppId().equals(appId)) return false;
-        if (meta.getType() == null || !"BUILD".equalsIgnoreCase(meta.getType())) return false;
+        if (appId == null) return false;
+        // 若 current.json 不存在或已切换到其它任务，认为 build 已结束（允许返回完整日志）
+        if (meta == null) return true;
+        if (meta.getAppId() == null || !meta.getAppId().equals(appId)) return true;
+        if (meta.getType() == null || !"BUILD".equalsIgnoreCase(meta.getType())) return true;
         return meta.getFinishedAt() != null || meta.getExitCode() != null;
     }
 
