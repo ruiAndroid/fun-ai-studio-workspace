@@ -14,10 +14,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
-import java.io.InputStream;
-import java.io.RandomAccessFile;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -43,7 +40,7 @@ public class FunAiWorkspaceRealtimeLogController {
         this.objectMapper = objectMapper;
     }
 
-    @GetMapping(path = "/log", produces = {MediaType.TEXT_PLAIN_VALUE, MediaType.APPLICATION_JSON_VALUE})
+    @GetMapping(path = "/log", produces = MediaType.APPLICATION_JSON_VALUE)
     @Operation(
             summary = "获取运行日志文件（非实时）",
             description = "直接返回对应日志文件内容（不做 SSE 增量推送）。优先按 type+appId 选择最新的日志文件；type 取 BUILD/INSTALL/PREVIEW。"
@@ -75,12 +72,7 @@ public class FunAiWorkspaceRealtimeLogController {
         HttpHeaders headers = new HttpHeaders();
         headers.add(HttpHeaders.CACHE_CONTROL, "no-cache");
         headers.add("X-Accel-Buffering", "no");
-        if (isBuild) {
-            headers.setContentType(MediaType.APPLICATION_JSON);
-        } else {
-            headers.setContentType(MediaType.TEXT_PLAIN);
-            headers.add(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\"" + logFile.getFileName().toString() + "\"");
-        }
+        headers.setContentType(MediaType.APPLICATION_JSON);
 
         if (isBuild) {
             boolean finished = isBuildFinished(meta, appId);
@@ -93,35 +85,12 @@ public class FunAiWorkspaceRealtimeLogController {
             return ResponseEntity.ok().headers(headers).body(resp);
         }
 
-        if (tailBytes > 0) {
-            long tb = tailBytes;
-            StreamingResponseBody body = out -> {
-                try (RandomAccessFile raf = new RandomAccessFile(logFile.toFile(), "r")) {
-                    long size = raf.length();
-                    long start = Math.max(0L, size - tb);
-                    raf.seek(start);
-                    byte[] buf = new byte[64 * 1024];
-                    int n;
-                    while ((n = raf.read(buf)) > 0) {
-                        out.write(buf, 0, n);
-                        out.flush();
-                    }
-                }
-            };
-            return ResponseEntity.ok().headers(headers).body(body);
-        }
-
-        StreamingResponseBody body = out -> {
-            try (InputStream in = Files.newInputStream(logFile)) {
-                byte[] buf = new byte[64 * 1024];
-                int n;
-                while ((n = in.read(buf)) > 0) {
-                    out.write(buf, 0, n);
-                    out.flush();
-                }
-            }
-        };
-        return ResponseEntity.ok().headers(headers).body(body);
+        String log = (tailBytes > 0)
+                ? readLogAsString(logFile, tailBytes)
+                : readLogAsString(logFile, 0L);
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("log", log);
+        return ResponseEntity.ok().headers(headers).body(resp);
     }
 
     private Path resolveLogFile(Long userId, Long appId, String op, FunAiWorkspaceRunMeta meta) {
