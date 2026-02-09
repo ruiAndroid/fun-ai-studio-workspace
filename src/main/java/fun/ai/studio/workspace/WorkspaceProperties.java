@@ -27,6 +27,14 @@ public class WorkspaceProperties {
     private String image;
 
     /**
+     * 镜像拉取策略（解决同名 tag 更新后节点本地仍然使用旧镜像的问题）：
+     * - IF_NOT_PRESENT：仅当本机不存在该镜像时才 pull（默认）
+     * - ALWAYS：每次 ensure（重建容器前）都先 pull 一次
+     * - NEVER：不主动 pull（依赖运维预拉取）
+     */
+    private String imagePullPolicy = "IF_NOT_PRESENT";
+
+    /**
      * 可选：registry 登录用户名（建议用 robot 账号）。
      * 若不配置，可通过环境变量 REGISTRY_USERNAME/REGISTRY_PASSWORD 注入。
      */
@@ -212,6 +220,14 @@ public class WorkspaceProperties {
 
     public void setImage(String image) {
         this.image = image;
+    }
+
+    public String getImagePullPolicy() {
+        return imagePullPolicy;
+    }
+
+    public void setImagePullPolicy(String imagePullPolicy) {
+        this.imagePullPolicy = imagePullPolicy;
     }
 
     public String getRegistryUsername() {

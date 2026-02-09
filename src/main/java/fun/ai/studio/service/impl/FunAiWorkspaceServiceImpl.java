@@ -2477,6 +2477,7 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
         String networkName = props.getNetworkName();
         // Ensure we can pull private registry images (Harbor/ACR) before any container (re)create.
         ensureRegistryLogin(meta.getImage());
+        ensureWorkspaceImage(meta.getImage());
 
         String status = queryContainerStatus(name);
         if ("STOPPING".equalsIgnoreCase(status)) {
@@ -2687,6 +2688,37 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
         } catch (Exception e) {
             // best-effort
             log.debug("ensureRegistryLogin ignored: err={}", e.getMessage());
+        }
+    }
+
+    /**
+     * Ensure workspace base image is present/up-to-date on this node.
+     * <p>
+     * Why: when using mutable tags (e.g. latest / latest-xxx), docker/podman may reuse the locally cached image and
+     * won't automatically re-pull on {@code docker run} if the tag already exists locally.
+     * This can lead to "image tag looks right but capability missing" (e.g. curl not found).
+     */
+    private void ensureWorkspaceImage(String image) {
+        if (!StringUtils.hasText(image)) return;
+
+        String policy = props.getImagePullPolicy();
+        String p = policy == null ? "" : policy.trim().toUpperCase();
+        if (p.isEmpty()) p = "IF_NOT_PRESENT";
+        if ("NEVER".equals(p)) return;
+
+        boolean needPull = "ALWAYS".equals(p);
+        if (!needPull) {
+            // IF_NOT_PRESENT: only pull when missing locally.
+            CommandResult inspect = docker("image", "inspect", image);
+            needPull = !inspect.isSuccess();
+        }
+        if (!needPull) return;
+
+        List<String> cmd = List.of("docker", "pull", image);
+        // Pull can be slow on cold cache / large layers; use a longer timeout.
+        CommandResult r = commandRunner.run(Duration.ofMinutes(5), cmd);
+        if (!r.isSuccess()) {
+            throw new RuntimeException("docker pull failed: image=" + image + ", policy=" + p + ", out=" + r.getOutput());
         }
     }
 
@@ -2947,6 +2979,18 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
         return commandRunner.run(CMD_TIMEOUT, cmd);
     }
 
+    /**
+     * podman-docker 会把一段固定提示打印到 stdout，容易污染 API 响应。
+     * 这里仅剔除该提示行，不改变其它输出内容（保留多行 stdout）。
+     */
+    private String stripPodmanDockerHint(String output) {
+        if (output == null || output.isEmpty()) return output == null ? "" : output;
+        String hint = "Emulate Docker CLI using podman. Create /etc/containers/nodocker to quiet msg.";
+        return output.replace(hint + "\r\n", "")
+                .replace(hint + "\n", "")
+                .replace(hint, "");
+    }
+
     @Override
     public FunAiWorkspaceApiTestResponse executeCurlCommand(Long userId, Long appId, String curlCommand, Integer timeoutSeconds) {
         assertEnabled();
@@ -3000,7 +3044,7 @@ public class FunAiWorkspaceServiceImpl implements FunAiWorkspaceService {
             long executionTimeMs = endTime - startTime;
 
             // 处理输出（CommandResult 只有一个 output 字段，包含 stdout 和 stderr）
-            String output = result.getOutput() == null ? "" : result.getOutput();
+            String output = stripPodmanDockerHint(result.getOutput() == null ? "" : result.getOutput());
             long maxSize = props.getTestMaxOutputSizeBytes();
 
             boolean outputTruncated = false;
