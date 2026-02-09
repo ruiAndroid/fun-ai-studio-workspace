@@ -72,6 +72,7 @@ public class FunAiWorkspaceRealtimeLogController {
         HttpHeaders headers = new HttpHeaders();
         headers.add(HttpHeaders.CACHE_CONTROL, "no-cache");
         headers.add("X-Accel-Buffering", "no");
+        headers.add("X-WS-Log-Version", "json-v2");
         headers.setContentType(MediaType.APPLICATION_JSON);
 
         if (isBuild) {
