@@ -265,8 +265,18 @@ public class FunAiWorkspaceFileController {
                     : Set.of("node_modules", ".git", "dist", "build", ".next", "target", ".npm-cache", ".funai");
 
             StreamingResponseBody body = outputStream -> {
-                fun.ai.studio.workspace.ZipUtils.zipDirectory(hostAppDir, outputStream, excludes);
-                outputStream.flush();
+                try {
+                    fun.ai.studio.workspace.ZipUtils.zipDirectory(hostAppDir, outputStream, excludes);
+                    outputStream.flush();
+                } catch (Exception ex) {
+                    // 注意：此时响应头通常已写出（Content-Type=application/zip），不要再抛异常触发全局异常处理器写 JSON
+                    log.error("zip stream failed: userId={}, appId={}, hostAppDir={}, includeNodeModules={}, error={}",
+                            userId, appId, hostAppDir, includeNodeModules, ex.getMessage(), ex);
+                    try {
+                        outputStream.flush();
+                    } catch (Exception ignore) {
+                    }
+                }
             };
 
             ContentDisposition disposition = ContentDisposition.attachment()
