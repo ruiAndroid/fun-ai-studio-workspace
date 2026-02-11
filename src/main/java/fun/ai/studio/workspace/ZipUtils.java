@@ -6,6 +6,7 @@ import java.io.InputStream;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.Set;
+import java.util.zip.Deflater;
 import java.util.zip.ZipOutputStream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
@@ -129,6 +130,78 @@ public final class ZipUtils {
                         if (shouldExclude(rel, excludes)) {
                             return;
                         }
+                        String entryName = rel.toString().replace("\\", "/");
+                        if (entryName.isBlank()) return;
+                        ZipEntry entry = new ZipEntry(entryName);
+                        zos.putNextEntry(entry);
+                        Files.copy(p, zos);
+                        zos.closeEntry();
+                    } catch (Exception e) {
+                        throw new RuntimeException(e);
+                    }
+                });
+            } catch (RuntimeException re) {
+                if (re.getCause() instanceof IOException ioe) {
+                    throw ioe;
+                }
+                throw re;
+            }
+            zos.finish();
+        }
+    }
+
+    /**
+     * 将目录打包为 zip（带保护阈值），避免单次打包拖垮整机。
+     *
+     * <p>特点：</p>
+     * - 仍然是流式写入（O(1) 内存）
+     * - 不跟随软链
+     * - 支持：最大文件数、最大总字节数限制（以 Files.size 统计，达到阈值会抛 IOException）
+     * - 默认使用 BEST_SPEED（降低 CPU 压力）
+     */
+    public static void zipDirectoryWithLimits(Path sourceDir,
+                                              OutputStream out,
+                                              Set<String> excludeNames,
+                                              long maxFiles,
+                                              long maxTotalBytes) throws IOException {
+        if (sourceDir == null || Files.notExists(sourceDir) || !Files.isDirectory(sourceDir)) {
+            throw new IOException("sourceDir 不存在或不是目录: " + sourceDir);
+        }
+        if (out == null) {
+            throw new IllegalArgumentException("out 不能为空");
+        }
+        Set<String> excludes = (excludeNames == null) ? Set.of() : excludeNames;
+        final long filesLimit = maxFiles <= 0 ? Long.MAX_VALUE : maxFiles;
+        final long bytesLimit = maxTotalBytes <= 0 ? Long.MAX_VALUE : maxTotalBytes;
+        final long[] files = new long[]{0};
+        final long[] bytes = new long[]{0};
+
+        try (ZipOutputStream zos = new ZipOutputStream(out)) {
+            zos.setLevel(Deflater.BEST_SPEED);
+            try (var walk = Files.walk(sourceDir)) {
+                walk.forEach(p -> {
+                    try {
+                        if (Files.isDirectory(p)) return;
+                        if (Files.isSymbolicLink(p)) return;
+                        Path rel = sourceDir.relativize(p);
+                        if (shouldExclude(rel, excludes)) return;
+
+                        // 计数/限流（在 copy 前做，避免读大文件后才发现超限）
+                        files[0]++;
+                        if (files[0] > filesLimit) {
+                            throw new IOException("zip 超过最大文件数限制: " + filesLimit);
+                        }
+                        long sz = 0;
+                        try {
+                            sz = Files.size(p);
+                        } catch (Exception ignore) {
+                            // size 获取失败时按 0 处理（仍允许 copy，copy 失败会抛出更明确异常）
+                        }
+                        bytes[0] += Math.max(0, sz);
+                        if (bytes[0] > bytesLimit) {
+                            throw new IOException("zip 超过最大大小限制: " + bytesLimit + " bytes");
+                        }
+
                         String entryName = rel.toString().replace("\\", "/");
                         if (entryName.isBlank()) return;
                         ZipEntry entry = new ZipEntry(entryName);

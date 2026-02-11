@@ -29,9 +29,11 @@ import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBo
 
 import java.io.InputStream;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Set;
+import java.util.stream.Stream;
 
 /**
  * Workspace 文件域：文件树/读写/上传下载（宿主机持久化目录）
@@ -295,6 +297,84 @@ public class FunAiWorkspaceFileController {
         } catch (Exception e) {
             log.error("download app zip failed: userId={}, appId={}, error={}", userId, appId, e.getMessage(), e);
             return ResponseEntity.internalServerError().build();
+        }
+    }
+
+    @GetMapping("/download-dist")
+    @Operation(summary = "下载 dist（zip）", description = "将 {hostRoot}/{userId}/apps/{appId}/dist 打包为 dist.zip 并下载；若 dist 不存在或为空则友好返回 JSON。")
+    public ResponseEntity<?> downloadDistZip(
+            @Parameter(description = "用户ID", required = true) @RequestParam Long userId,
+            @Parameter(description = "应用ID", required = true) @RequestParam Long appId
+    ) {
+        try {
+            activityTracker.touch(userId);
+            Path hostAppDir = Paths.get(workspaceService.ensureAppDir(userId, appId).getHostAppDir());
+            Path distDir = hostAppDir.resolve("dist");
+
+            if (Files.notExists(distDir) || !Files.isDirectory(distDir, LinkOption.NOFOLLOW_LINKS)) {
+                return ResponseEntity.ok()
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .body(Result.error("dist 目录不存在：请先构建（npm run build）后再下载"));
+            }
+
+            // dist 判空：至少包含一个 regular file
+            boolean hasFile = false;
+            try (Stream<Path> s = Files.walk(distDir)) {
+                hasFile = s.anyMatch(p -> {
+                    try {
+                        return Files.isRegularFile(p, LinkOption.NOFOLLOW_LINKS) && !Files.isSymbolicLink(p);
+                    } catch (Exception ignore) {
+                        return false;
+                    }
+                });
+            }
+            if (!hasFile) {
+                return ResponseEntity.ok()
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .body(Result.error("dist 目录为空：请先构建（npm run build）后再下载"));
+            }
+
+            // 保护阈值（避免打包超大 dist 拖垮整机；按需可后续做成配置项）
+            final long maxFiles = 5000;
+            final long maxTotalBytes = 200L * 1024 * 1024; // 200MB
+
+            String filename = "dist.zip";
+            StreamingResponseBody body = outputStream -> {
+                try {
+                    // dist 内部不再排除其它目录（只打包 dist/ 子树）；阈值保护 + best speed 压缩
+                    fun.ai.studio.workspace.ZipUtils.zipDirectoryWithLimits(distDir, outputStream, Set.of(), maxFiles, maxTotalBytes);
+                    outputStream.flush();
+                } catch (Exception ex) {
+                    // headers 已写出时不要抛异常触发全局异常处理器写 JSON
+                    log.error("download dist zip stream failed: userId={}, appId={}, distDir={}, err={}",
+                            userId, appId, distDir, ex.getMessage(), ex);
+                    try {
+                        outputStream.flush();
+                    } catch (Exception ignore) {
+                    }
+                }
+            };
+
+            ContentDisposition disposition = ContentDisposition.attachment()
+                    .filename(filename)
+                    .build();
+
+            return ResponseEntity.ok()
+                    .header(HttpHeaders.CACHE_CONTROL, "no-cache, no-store, must-revalidate")
+                    .header(HttpHeaders.PRAGMA, "no-cache")
+                    .header(HttpHeaders.EXPIRES, "0")
+                    .header(HttpHeaders.CONTENT_DISPOSITION, disposition.toString())
+                    .contentType(MediaType.parseMediaType("application/zip"))
+                    .body(body);
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.ok()
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(Result.error(e.getMessage()));
+        } catch (Exception e) {
+            log.error("download dist zip failed: userId={}, appId={}, error={}", userId, appId, e.getMessage(), e);
+            return ResponseEntity.ok()
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(Result.error("下载 dist 失败：" + e.getMessage()));
         }
     }
 }
