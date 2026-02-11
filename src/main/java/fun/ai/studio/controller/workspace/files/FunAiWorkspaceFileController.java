@@ -1,5 +1,6 @@
 package fun.ai.studio.controller.workspace.files;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import fun.ai.studio.common.Result;
 import fun.ai.studio.entity.request.FunAiWorkspaceFileWriteRequest;
 import fun.ai.studio.entity.request.FunAiWorkspacePathRequest;
@@ -32,6 +33,7 @@ import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.charset.StandardCharsets;
 import java.util.Set;
 import java.util.stream.Stream;
 
@@ -46,10 +48,14 @@ public class FunAiWorkspaceFileController {
 
     private final FunAiWorkspaceService workspaceService;
     private final WorkspaceActivityTracker activityTracker;
+    private final ObjectMapper objectMapper;
 
-    public FunAiWorkspaceFileController(FunAiWorkspaceService workspaceService, WorkspaceActivityTracker activityTracker) {
+    public FunAiWorkspaceFileController(FunAiWorkspaceService workspaceService,
+                                        WorkspaceActivityTracker activityTracker,
+                                        ObjectMapper objectMapper) {
         this.workspaceService = workspaceService;
         this.activityTracker = activityTracker;
+        this.objectMapper = objectMapper;
     }
 
     @PostMapping("/ensure-dir")
@@ -302,7 +308,7 @@ public class FunAiWorkspaceFileController {
 
     @GetMapping("/download-dist")
     @Operation(summary = "下载 dist（zip）", description = "将 {hostRoot}/{userId}/apps/{appId}/dist 打包为 dist.zip 并下载；若 dist 不存在或为空则友好返回 JSON。")
-    public ResponseEntity<?> downloadDistZip(
+    public ResponseEntity<StreamingResponseBody> downloadDistZip(
             @Parameter(description = "用户ID", required = true) @RequestParam Long userId,
             @Parameter(description = "应用ID", required = true) @RequestParam Long appId
     ) {
@@ -312,9 +318,7 @@ public class FunAiWorkspaceFileController {
             Path distDir = hostAppDir.resolve("dist");
 
             if (Files.notExists(distDir) || !Files.isDirectory(distDir, LinkOption.NOFOLLOW_LINKS)) {
-                return ResponseEntity.ok()
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .body(Result.error("dist 目录不存在：请先构建（npm run build）后再下载"));
+                return jsonBody("dist 目录不存在：请先构建（npm run build）后再下载");
             }
 
             // dist 判空：至少包含一个 regular file
@@ -329,9 +333,7 @@ public class FunAiWorkspaceFileController {
                 });
             }
             if (!hasFile) {
-                return ResponseEntity.ok()
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .body(Result.error("dist 目录为空：请先构建（npm run build）后再下载"));
+                return jsonBody("dist 目录为空：请先构建（npm run build）后再下载");
             }
 
             // 保护阈值（避免打包超大 dist 拖垮整机；按需可后续做成配置项）
@@ -367,15 +369,29 @@ public class FunAiWorkspaceFileController {
                     .contentType(MediaType.parseMediaType("application/zip"))
                     .body(body);
         } catch (IllegalArgumentException e) {
-            return ResponseEntity.ok()
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(Result.error(e.getMessage()));
+            return jsonBody(e.getMessage());
         } catch (Exception e) {
             log.error("download dist zip failed: userId={}, appId={}, error={}", userId, appId, e.getMessage(), e);
-            return ResponseEntity.ok()
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(Result.error("下载 dist 失败：" + e.getMessage()));
+            return jsonBody("下载 dist 失败：" + e.getMessage());
         }
+    }
+
+    private ResponseEntity<StreamingResponseBody> jsonBody(String msg) {
+        StreamingResponseBody body = os -> {
+            try {
+                byte[] b = objectMapper.writeValueAsBytes(Result.error(msg));
+                os.write(b);
+                os.flush();
+            } catch (Exception e) {
+                // 极端兜底：ObjectMapper 不可用时，至少返回纯文本
+                os.write(("{\"code\":500,\"message\":\"" + String.valueOf(msg).replace("\"", "\\\"") + "\",\"data\":null}")
+                        .getBytes(StandardCharsets.UTF_8));
+                os.flush();
+            }
+        };
+        return ResponseEntity.ok()
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(body);
     }
 }
 
