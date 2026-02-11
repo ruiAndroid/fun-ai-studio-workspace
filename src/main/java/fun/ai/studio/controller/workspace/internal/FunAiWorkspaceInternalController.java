@@ -19,6 +19,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import jakarta.servlet.http.HttpServletRequest;
 
+import java.util.HashMap;
 import java.util.Map;
 
 /**
@@ -123,6 +124,47 @@ public class FunAiWorkspaceInternalController {
         } catch (Exception e) {
             log.warn("run busy count failed: userId={}, err={}", userId, e.getMessage());
             return Result.error(500, "run busy count failed: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 诊断接口：查看 workspace-node（本机）眼里的“最近活跃时间/空闲时长/回收阈值”。
+     *
+     * <p>用于排查“前端反馈心跳一直在传，但仍被 idle 回收 stop/停容器”的问题：
+     * - 如果这里的 lastActive 一直不更新：说明心跳/请求没有真正到达 workspace-node（或被鉴权/网络挡住）
+     * - 如果 idleMs 经常超过阈值：说明心跳频率不足/偶发中断/系统时间跳变等</p>
+     */
+    @GetMapping("/activity")
+    @Operation(summary = "（内部）诊断：查询用户活跃时间与 idle 判定", description = "返回 lastActiveAtMs/idleMs/阈值等，用于排查 idle 回收误触发")
+    public Result<Map<String, Object>> activity(
+            @Parameter(description = "用户ID（优先）", required = false) @RequestParam(required = false) Long userId,
+            @Parameter(description = "应用ID（可选：用于反查 userId）", required = false) @RequestParam(required = false) Long appId
+    ) {
+        try {
+            Long effectiveUserId = userId;
+            if (effectiveUserId == null && appId != null) {
+                effectiveUserId = workspaceServiceImpl.resolveUserIdByAppId(appId);
+            }
+            if (effectiveUserId == null) {
+                return Result.error(404, "userId/appId not found");
+            }
+
+            Map<String, Object> out = new HashMap<>();
+            out.put("serverTimeMs", System.currentTimeMillis());
+            out.put("userId", effectiveUserId);
+
+            Long last = activityTracker == null ? null : activityTracker.getLastActiveAtMs(effectiveUserId);
+            out.put("lastActiveAtMs", last);
+            out.put("idleMs", (last == null) ? null : (System.currentTimeMillis() - last));
+            Long lastTouchNs = activityTracker == null ? null : activityTracker.getLastTouchNs(effectiveUserId);
+            out.put("idleMsMonotonic", (lastTouchNs == null) ? null : ((System.nanoTime() - lastTouchNs) / 1_000_000L));
+            out.put("idleStopRunMinutes", workspaceProperties == null ? null : workspaceProperties.getIdleStopRunMinutes());
+            out.put("idleStopContainerMinutes", workspaceProperties == null ? null : workspaceProperties.getIdleStopContainerMinutes());
+
+            return Result.success(out);
+        } catch (Exception e) {
+            log.warn("activity diag failed: userId={}, appId={}, err={}", userId, appId, e.getMessage());
+            return Result.error(500, "activity diag failed: " + e.getMessage());
         }
     }
 }

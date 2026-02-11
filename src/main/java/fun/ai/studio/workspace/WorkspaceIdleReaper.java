@@ -33,37 +33,42 @@ public class WorkspaceIdleReaper {
     public void sweep() {
         if (!props.isEnabled()) return;
 
-        long now = System.currentTimeMillis();
+        // idle 判定使用 monotonic clock（nanoTime），避免系统时间跳变导致误回收
+        long nowNs = System.nanoTime();
         int stopRunMin = props.getIdleStopRunMinutes();
         int stopContainerMin = props.getIdleStopContainerMinutes();
         // 约定：<=0 表示禁用（避免误配 0 导致“立刻回收”，容器看起来总是 EXITED）
-        long stopRunMs = stopRunMin > 0 ? stopRunMin * 60_000L : Long.MAX_VALUE;
-        long stopContainerMs = stopContainerMin > 0 ? stopContainerMin * 60_000L : Long.MAX_VALUE;
+        long stopRunNs = stopRunMin > 0 ? stopRunMin * 60_000_000_000L : Long.MAX_VALUE;
+        long stopContainerNs = stopContainerMin > 0 ? stopContainerMin * 60_000_000_000L : Long.MAX_VALUE;
 
-        Map<Long, Long> snap = tracker.snapshot();
+        Map<Long, Long> snap = tracker.snapshotTouchNs();
         for (var e : snap.entrySet()) {
             Long userId = e.getKey();
-            Long lastAt = e.getValue();
-            if (userId == null || lastAt == null) continue;
-            long idle = now - lastAt;
+            Long lastTouch = e.getValue();
+            if (userId == null || lastTouch == null) continue;
+            long idleNs = nowNs - lastTouch;
+            long idleMs = idleNs / 1_000_000L;
 
             try {
-                if (idle >= stopContainerMs) {
+                if (idleNs >= stopContainerNs) {
                     // 先 stop run 再停容器（避免残留 pid/meta）
                     boolean runStopped = workspaceService.stopRunForIdle(userId);
                     if (runStopped) {
-                        log.info("idle reaper: stopped run: userId={}, idleMs={}, thresholdMs={}", userId, idle, stopRunMs);
+                        log.info("idle reaper: stopped run: userId={}, idleMs={}, thresholdMs={}",
+                                userId, idleMs, (stopRunNs == Long.MAX_VALUE ? -1 : stopRunNs / 1_000_000L));
                     }
-                    log.info("idle reaper: stop container: userId={}, idleMs={}, thresholdMs={}", userId, idle, stopContainerMs);
+                    log.info("idle reaper: stop container: userId={}, idleMs={}, thresholdMs={}",
+                            userId, idleMs, (stopContainerNs == Long.MAX_VALUE ? -1 : stopContainerNs / 1_000_000L));
                     workspaceService.stopContainerForIdle(userId);
-                } else if (idle >= stopRunMs) {
+                } else if (idleNs >= stopRunNs) {
                     boolean stopped = workspaceService.stopRunForIdle(userId);
                     if (stopped) {
-                        log.info("idle reaper: stop run: userId={}, idleMs={}, thresholdMs={}", userId, idle, stopRunMs);
+                        log.info("idle reaper: stop run: userId={}, idleMs={}, thresholdMs={}",
+                                userId, idleMs, (stopRunNs == Long.MAX_VALUE ? -1 : stopRunNs / 1_000_000L));
                     }
                 }
             } catch (Exception ex) {
-                log.warn("idle reaper failed: userId={}, idleMs={}, error={}", userId, idle, ex.getMessage());
+                log.warn("idle reaper failed: userId={}, idleMs={}, error={}", userId, idleMs, ex.getMessage());
             }
         }
     }

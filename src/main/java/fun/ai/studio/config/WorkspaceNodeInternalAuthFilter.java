@@ -89,6 +89,10 @@ public class WorkspaceNodeInternalAuthFilter extends OncePerRequestFilter {
         String ct = req.getContentType();
         if (ct != null && ct.toLowerCase(Locale.ROOT).startsWith("multipart/")) return true;
         String uri = req.getRequestURI();
+        // 诊断接口：仅用于运维排障（仍受 IP allowlist 约束），跳过签名便于直接 curl。
+        if (uri != null && uri.startsWith("/api/fun-ai/workspace/internal/activity")) {
+            return true;
+        }
         // Nginx auth_request 子请求：通常只会从本机 127.0.0.1 访问 workspace-node，且 Nginx 不方便附加 HMAC 头。
         // 这些接口本身会再校验 X-WS-Token（nginxAuthToken），并且外层还有安全组 + 127.0.0.1/IP allowlist，安全性足够。
         if (uri != null && uri.startsWith("/api/fun-ai/workspace/internal/nginx/")) {
